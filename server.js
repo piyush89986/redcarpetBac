@@ -23,8 +23,70 @@ require("dotenv").config();
 // initialize express
 const app = express();
 
-// middleware
-app.use(cors());
+// Dynamic CORS Configuration
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  process.env.REACT_APP_API_BASE_URL,
+  "https://redcarpet-fr.vercel.app",
+  "http://localhost:3000",
+  "http://localhost:5173",
+  "http://127.0.0.1:3000",
+].filter(Boolean);
+
+const corsOptions = {
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true);
+    if (
+      origin.endsWith(".vercel.app") ||
+      origin.includes("localhost") ||
+      origin.includes("127.0.0.1") ||
+      origin.startsWith("http://10.") ||
+      origin.startsWith("http://192.168.") ||
+      allowedOrigins.includes(origin) ||
+      process.env.NODE_ENV !== "production"
+    ) {
+      return callback(null, true);
+    }
+    return callback(null, true);
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "X-Requested-With",
+    "Accept",
+    "Origin",
+  ],
+  optionsSuccessStatus: 200,
+};
+
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
+
+// Explicit header fallback to guarantee zero CORS issues
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  } else {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  }
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader(
+    "Access-Control-Allow-Methods",
+    "GET, POST, PUT, DELETE, PATCH, OPTIONS"
+  );
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization, X-Requested-With, Accept, Origin"
+  );
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 app.use(express.json());
 app.use(bodyParser.json());
 
@@ -49,7 +111,11 @@ mongoose
 
 const server = http.createServer(app);
 const io = socketIo(server, {
-  cors: { origin: "*" },
+  cors: {
+    origin: (origin, callback) => callback(null, true),
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    credentials: true,
+  },
 });
 
 // Middleware
@@ -135,7 +201,8 @@ app.post("/api/start-countdown", async (req, res) => {
     io.emit("countdown-start", { startTime, duration, shopId });
 
     // Twilio SMS Notification
-    const countdownLink = `${process.env.REACT_APP_API_BASE_URL}/countdown/:id`;
+    const frontendUrl = (process.env.FRONTEND_URL || process.env.REACT_APP_API_BASE_URL || "https://redcarpet-fr.vercel.app").replace(/\/+$/, "");
+    const countdownLink = `${frontendUrl}/countdown/${shopId || ":id"}`;
     await client.messages.create({
       body: `Countdown started! Track live here: ${countdownLink}`,
       from: process.env.TWILIO_PHONE,

@@ -118,14 +118,21 @@ router.post("/login", async (req, res) => {
   const { email, password } = req.body;
 
   try {
+    if (!email || !password) {
+      return res.status(400).json({ error: "Email and password are required" });
+    }
+
     let user = await User.findOne({ email });
 
     // Step 1: Directly check in User collection
     if (user) {
+      if (!user.password) {
+        return res.status(400).json({ error: "No password set for this account" });
+      }
       const isMatch = await bcrypt.compare(password, user.password);
       if (!isMatch) return res.status(400).json({ error: "Invalid password" });
     } 
-    // Step 2: Check in Food collection if not found in User
+    // Step 2: Check in Food/Shop collection if not found in User
     else {
       user = await Shop.findOne({ email });
 
@@ -144,6 +151,9 @@ router.post("/login", async (req, res) => {
       }
 
       // MenuItems ya Shop schema se password match karna
+      if (!user.password) {
+        return res.status(400).json({ error: "No password set for this account" });
+      }
       const isMatch = await bcrypt.compare(password, user.password);
       if (!isMatch) return res.status(400).json({ error: "Invalid password" });
     }
@@ -160,22 +170,28 @@ router.post("/login", async (req, res) => {
       console.log("No shop found for this user.");
     }
 
-    // Step 5: Generate JWT Token
+    // Step 5: Generate JWT Token with fallback secret
+    const jwtSecret =
+      process.env.JWT_SECRET || "kjsdrjhjrsdbuydtkjmgujt_redcarpet_default_secret";
+
     const token = jwt.sign(
-      { userId: user._id, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: "1h" }
+      { userId: user._id || "", role: user.role || "owner" },
+      jwtSecret,
+      { expiresIn: "7d" }
     );
 
     res.json({
       token,
-      user: { name: user.name || "", email: user.email, role: user.role }, // Handle name missing case
+      user: {
+        name: user.name || user.title || "",
+        email: user.email,
+        role: user.role || "owner",
+      },
       shopId: shop ? shop._id : null,
     });
-
   } catch (error) {
     console.error("Login error:", error);
-    res.status(500).json({ error: "Internal Server Error" });
+    res.status(500).json({ error: error.message || "Internal Server Error" });
   }
 });
 
