@@ -168,12 +168,31 @@ const client = twilio(accountSid, authToken);
 // Routes
 app.post("/api/information", async (req, res) => {
   console.log("Data received:", req.body);
-  const { name, mobile, email, token, shopid } = req.body;
+  const { name, mobile, email, shopid } = req.body;
   try {
-    const newInfo = new User({ name, mobile, email, token, shopid });
+    // 12-hour refreshed token logic per shop
+    const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000);
+    const count = await User.countDocuments({
+      shopid: shopid,
+      createdAt: { $gte: twelveHoursAgo },
+    });
+    // Starts at 101, resets every 12 hours
+    const assignedToken = String(100 + count + 1);
+
+    const newInfo = new User({
+      name,
+      mobile,
+      email,
+      token: assignedToken,
+      shopid,
+    });
     await newInfo.save();
-    console.log("Data saved successfully:", newInfo);
-    res.status(201).json({ message: "Data saved successfully!", newInfo });
+    console.log("Data saved successfully with 12h-refreshed token:", assignedToken);
+    res.status(201).json({
+      message: "Data saved successfully!",
+      token: assignedToken,
+      newInfo,
+    });
   } catch (err) {
     console.log("Error saving data:", err);
     res.status(500).json({ message: "Error saving data", error: err });
@@ -397,18 +416,17 @@ app.post("/api/verify-otp", async (req, res) => {
 
 
 
-// Retrieve Latest Token
+// Retrieve Latest Token (within 12-hour window)
 app.get("/api/get-token", async (req, res) => {
   try {
-    console.log("---------------------------------------");
-    const now = new Date();
+    const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000);
     const latestUser = await User.findOne({
       mobile: req.query.phone,
-      updatedAt: { $gte: new Date(now.getTime() - 60 * 1000 * 5) },
-    }).sort({ updatedAt: -1 });
+      createdAt: { $gte: twelveHoursAgo },
+    }).sort({ createdAt: -1 });
 
     if (!latestUser) {
-      return res.status(404).json({ message: "No token found" });
+      return res.status(404).json({ message: "No active token found in last 12 hours" });
     }
     res.json({ token: latestUser.token });
   } catch (error) {

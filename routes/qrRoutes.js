@@ -18,6 +18,18 @@ router.get("/qrcode/:shopId", async (req, res) => {
           qrUrl: shop.qrCodeUrl,
           size: shop.qrCodeSize || 240,
         };
+      } else {
+        const parentMall = await Shop.findOne({ "menuItems._id": shopId });
+        if (parentMall) {
+          const item = parentMall.menuItems.id(shopId);
+          if (item && item.qrCodeUrl) {
+            config = {
+              shopId,
+              qrUrl: item.qrCodeUrl,
+              size: item.qrCodeSize || 240,
+            };
+          }
+        }
       }
     }
 
@@ -75,14 +87,27 @@ const saveQrHandler = async (req, res) => {
       { new: true, upsert: true }
     );
 
-    // 2. Also update Shop document if shopId is a valid ObjectId
+    // 2. Also update Shop or menuItem document if shopId is a valid ObjectId
     if (mongoose.Types.ObjectId.isValid(shopId)) {
-      await Shop.findByIdAndUpdate(shopId, {
-        $set: {
-          qrCodeUrl: qrUrl,
-          qrCodeSize: qrSize,
-        },
-      });
+      const topShop = await Shop.findById(shopId);
+      if (topShop) {
+        await Shop.findByIdAndUpdate(shopId, {
+          $set: {
+            qrCodeUrl: qrUrl,
+            qrCodeSize: qrSize,
+          },
+        });
+      } else {
+        await Shop.updateOne(
+          { "menuItems._id": shopId },
+          {
+            $set: {
+              "menuItems.$.qrCodeUrl": qrUrl,
+              "menuItems.$.qrCodeSize": qrSize,
+            },
+          }
+        );
+      }
     }
 
     res.status(200).json({

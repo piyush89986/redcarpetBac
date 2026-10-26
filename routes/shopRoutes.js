@@ -63,20 +63,47 @@ router.get("/api/shops/:id/menu", async (req, res) => {
   }
 });
 
-module.exports = router;
+const mongoose = require("mongoose");
 
-
-// ✅ Fetch a single shop item along with menu items
+// ✅ Fetch a single shop or store item along with details
 router.get("/api/shops/:id", async (req, res) => {
-    try {
-      const shop = await Shop.findById(req.params.id);
-      if (!shop) return res.status(404).json({ message: "Shop not found" });
-  
-      res.json(shop); // ✅ Send menuItems along with shop details
-    } catch (err) {
-      res.status(500).json({ message: err.message });
+  try {
+    const { id } = req.params;
+    let shop = null;
+
+    if (mongoose.Types.ObjectId.isValid(id)) {
+      shop = await Shop.findById(id);
+
+      // If not a top-level mall, check if it's a specific store inside a mall
+      if (!shop) {
+        const parentMall = await Shop.findOne({ "menuItems._id": id });
+        if (parentMall) {
+          const item = parentMall.menuItems.id(id);
+          if (item) {
+            shop = {
+              _id: item._id,
+              title: item.name,
+              name: item.name,
+              description: item.description,
+              image: item.image,
+              email: item.email,
+              role: item.role,
+              mallTitle: parentMall.title,
+              mallId: parentMall._id,
+              menuItems: [item],
+            };
+          }
+        }
+      }
     }
-  });
+
+    if (!shop) return res.status(404).json({ message: "Shop not found" });
+
+    res.json(shop);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
   
 
   // Update Menu Item

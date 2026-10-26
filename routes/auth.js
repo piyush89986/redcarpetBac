@@ -175,7 +175,7 @@ router.post("/login", async (req, res) => {
       process.env.JWT_SECRET || "kjsdrjhjrsdbuydtkjmgujt_redcarpet_default_secret";
 
     const token = jwt.sign(
-      { userId: user._id || "", role: user.role || "owner" },
+      { userId: user._id || "", role: user.role || "admin" },
       jwtSecret,
       { expiresIn: "7d" }
     );
@@ -185,7 +185,7 @@ router.post("/login", async (req, res) => {
       user: {
         name: user.name || user.title || "",
         email: user.email,
-        role: user.role || "owner",
+        role: user.role || "admin",
       },
       shopId: shop ? shop._id : null,
     });
