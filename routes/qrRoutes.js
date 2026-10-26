@@ -4,6 +4,22 @@ const mongoose = require("mongoose");
 const QrConfig = require("../models/QrConfig");
 const Shop = require("../models/Shop");
 
+const FRONTEND_BASE_URL =
+  process.env.FRONTEND_URL ||
+  process.env.REACT_APP_API_BASE_URL ||
+  "https://redcarpet-fr-git-main-piyush-singh-tanwar-s-projects.vercel.app";
+
+const sanitizeQrUrl = (url, shopId) => {
+  const base = FRONTEND_BASE_URL.replace(/\/+$/, "");
+  if (!url || typeof url !== "string") {
+    return `${base}/${shopId}`;
+  }
+  if (url.includes("localhost") || url.includes("127.0.0.1")) {
+    return url.replace(/^https?:\/\/[^/]+/, base);
+  }
+  return url;
+};
+
 // GET QR config for a specific mall / shop
 router.get("/qrcode/:shopId", async (req, res) => {
   try {
