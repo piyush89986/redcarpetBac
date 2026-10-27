@@ -14,6 +14,7 @@ const displayRoutes = require("./routes/displayRoutes"); // ✅ Add this line
 const forgotPasswordRoutes = require("./routes/forgotPasswordRoutes"); // Ensure path is correct
 const utilityRoutes = require("./routes/utilityRoute"); // Ensure path is correct
 const qrRoutes = require("./routes/qrRoutes");
+const rateLimit = require("express-rate-limit");
 
 const bcrypt = require("bcryptjs");
 
@@ -22,6 +23,9 @@ require("dotenv").config();
 
 // initialize express
 const app = express();
+
+// Trust reverse proxy (Render, Vercel, Nginx) for accurate client IP rate limiting
+app.set("trust proxy", 1);
 
 // Dynamic CORS Configuration
 const allowedOrigins = [
@@ -87,17 +91,77 @@ app.use((req, res, next) => {
   next();
 });
 
+// Security Headers Middleware (OWASP standards)
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "SAMEORIGIN");
+  res.setHeader("X-XSS-Protection", "1; mode=block");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  next();
+});
+
+// Rate Limiters
+const globalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 600, // Limit each IP to 600 requests per 15 minutes
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) =>
+    req.path === "/health" ||
+    req.path === "/version" ||
+    req.path === "/api/health" ||
+    req.path === "/api/version",
+  message: {
+    success: false,
+    error: "Too many requests from this IP. Please try again after 15 minutes.",
+  },
+});
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 30, // Limit login / auth attempts to 30 per 15 min
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: "Too many authentication attempts. Please wait 15 minutes before trying again.",
+  },
+});
+
+const otpSendLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000, // 10 minutes
+  max: 6, // Limit SMS OTP sends to 6 per 10 minutes (prevents SMS spam & saves Twilio balance)
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: "Too many OTP requests from this device. Please wait 10 minutes.",
+  },
+});
+
+const otpVerifyLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000, // 10 minutes
+  max: 12, // Limit OTP verifications to 12 attempts per 10 min (prevents brute-force)
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: "Too many verification attempts. Please wait 10 minutes before trying again.",
+  },
+});
+
 app.use(express.json());
 app.use(bodyParser.json());
-
-// import routes (after initializing app)
 app.use(express.urlencoded({ extended: true }));
-app.use("/api/auth", authRoutes);
-app.use("/api", menuRoutes); // ✅ Add this line
-app.use("/api", forgotPasswordRoutes); // Route prefix should match frontend call
 
-// Do not change this, is it used for deployment health check,
-app.use("/api", utilityRoutes); // Route prefix should match frontend call
+// Apply rate limiting
+app.use("/api", globalLimiter);
+app.use("/api/auth", authLimiter, authRoutes);
+app.use("/api", menuRoutes);
+app.use("/api", forgotPasswordRoutes);
+
+// Health check utility routes (exempt from blocking)
+app.use("/api", utilityRoutes);
 
 
 // Database Connection
@@ -268,8 +332,8 @@ io.on("connection", (socket) => {
 
 
 
-// Send OTP
-app.post("/api/send-otp", async (req, res) => {
+// Send OTP (Protected by otpSendLimiter)
+app.post("/api/send-otp", otpSendLimiter, async (req, res) => {
   const { mobile } = req.body;
   if (!mobile) {
     return res.status(400).json({ success: false, error: "Mobile number is required" });
@@ -334,43 +398,8 @@ app.post("/api/send-otp", async (req, res) => {
   }
 });
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// // Verify OTP
-// app.post("/api/verify-otp", (req, res) => {
-//   const { mobile, otp } = req.body;
-
-//   if (!otpStore[mobile]) {
-//     return res
-//       .status(400)
-//       .json({ error: "No OTP found for this mobile number" });
-//   }
-
-//   if (parseInt(otp) === otpStore[mobile]) {
-//     delete otpStore[mobile];
-//     return res.json({ success: true, message: "OTP verified successfully" });
-//   } else {
-//     return res.status(400).json({ error: "Invalid OTP, please try again" });
-//   }
-// });
-
-
-
-
-
-app.post("/api/verify-otp", async (req, res) => {
+// Verify OTP (Protected by otpVerifyLimiter)
+app.post("/api/verify-otp", otpVerifyLimiter, async (req, res) => {
   const { mobile, otp } = req.body;
   const cleanMobile = String(mobile || "").replace(/\D/g, "");
   const storedOtp = otpStore[cleanMobile] || otpStore[mobile];
