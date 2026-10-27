@@ -10,6 +10,11 @@ const ShopSchema = new mongoose.Schema({
   mallconpassword: String,
   qrCodeUrl: String,
   qrCodeSize: Number,
+  subscriptionStatus: {
+    type: String,
+    enum: ["active", "inactive"],
+    default: "active",
+  },
   menuItems: [
     {
       name: String,
@@ -20,6 +25,13 @@ const ShopSchema = new mongoose.Schema({
       password: String,
       role: String,
       shopconpassword: String,
+      qrCodeUrl: String,
+      qrCodeSize: Number,
+      subscriptionStatus: {
+        type: String,
+        enum: ["active", "inactive"],
+        default: "active",
+      },
     },
   ],
 });

@@ -563,6 +563,68 @@ app.get("/api/shops/:id", async (req, res) => {
   }
 });
 
+// Toggle / Update Mall & Store Subscription Status
+const handleSubscriptionToggle = async (req, res) => {
+  const { id } = req.params;
+  const { subscriptionStatus } = req.body;
+
+  if (!subscriptionStatus || !["active", "inactive"].includes(subscriptionStatus)) {
+    return res.status(400).json({
+      success: false,
+      message: "Valid subscriptionStatus ('active' or 'inactive') is required.",
+    });
+  }
+
+  try {
+    // 1. Try finding and updating top-level Mall / Shop
+    if (mongoose.Types.ObjectId.isValid(id)) {
+      let shop = await Shop.findById(id);
+      if (shop) {
+        shop.subscriptionStatus = subscriptionStatus;
+        await shop.save();
+        return res.status(200).json({
+          success: true,
+          message: `Subscription successfully updated to ${subscriptionStatus}`,
+          subscriptionStatus,
+          shop,
+        });
+      }
+    }
+
+    // 2. Try finding as a child store inside menuItems
+    const parentMall = await Shop.findOne({ "menuItems._id": id });
+    if (parentMall) {
+      const item = parentMall.menuItems.id(id);
+      if (item) {
+        item.subscriptionStatus = subscriptionStatus;
+        await parentMall.save();
+        return res.status(200).json({
+          success: true,
+          message: `Store subscription successfully updated to ${subscriptionStatus}`,
+          subscriptionStatus,
+          shop: item,
+        });
+      }
+    }
+
+    return res.status(404).json({
+      success: false,
+      message: "Shop / Mall not found with ID " + id,
+    });
+  } catch (error) {
+    console.error("Subscription update error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to update subscription status",
+      error: error.message,
+    });
+  }
+};
+
+app.patch("/api/shops/:id/subscription", handleSubscriptionToggle);
+app.put("/api/shops/:id/subscription", handleSubscriptionToggle);
+app.post("/api/shops/:id/subscription", handleSubscriptionToggle);
+
 // ye hai edit or save karne ke liye(fruits names, example)
 app.put("/api/shops/update-menu-item/:id/:name", async (req, res) => {
   const { id, name } = req.params;

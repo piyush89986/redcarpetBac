@@ -15,7 +15,7 @@ router.get("/api/shops", async (req, res) => {
 // // ✅ Add new shop item
 // router.post("/shops", async (req, res) => {
 //   const { title, description, image} = req.body;
-  
+
 //   const shop = new Shop({
 //     title,
 //     description,
@@ -44,7 +44,7 @@ router.post("/api/shops/:id/menu", async (req, res) => {
 
     shop.menuItems.push(req.body);
     await shop.save();
-    
+
     res.json({ message: "Menu item added successfully!", shop });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -104,13 +104,13 @@ router.get("/api/shops/:id", async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 });
-  
 
-  // Update Menu Item
+
+// Update Menu Item
 router.put("/api/update-menu-item/:shopId/:menuItemName", async (req, res) => {
   try {
     const { shopId, menuItemName } = req.params;
-    const { newName, newLink, newDescription, newEmail, newPassword, newShopConPassword, newRole} = req.body;
+    const { newName, newLink, newDescription, newEmail, newPassword, newShopConPassword, newRole } = req.body;
 
     const shop = await Shop.findById(shopId);
     if (!shop) return res.status(404).json({ message: "Shop item not found" });
