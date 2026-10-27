@@ -7,7 +7,7 @@ const Shop = require("../models/Shop");
 const FRONTEND_BASE_URL =
   process.env.FRONTEND_URL ||
   process.env.REACT_APP_API_BASE_URL ||
-  "https://redcarpet-fr.vercel.app/";
+  "https://redcarpet-fr.vercel.app";
 
 const sanitizeQrUrl = (url, shopId) => {
   const base = FRONTEND_BASE_URL.replace(/\/+$/, "");
