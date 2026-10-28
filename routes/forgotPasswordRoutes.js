@@ -16,10 +16,17 @@ const otpStore = new Map();
 const getTransporter = () => {
   const host = process.env.SMTP_HOST || "smtp.gmail.com";
   const port = Number(process.env.SMTP_PORT || 587);
-  const user = process.env.SMTP_USER;
-  const pass = process.env.SMTP_PASS;
+  const user = process.env.SMTP_USER ? process.env.SMTP_USER.trim() : "";
+  const pass = process.env.SMTP_PASS ? process.env.SMTP_PASS.trim().replace(/\s+/g, "") : "";
 
   if (user && pass) {
+    if (host.includes("gmail") || user.endsWith("@gmail.com")) {
+      return nodemailer.createTransport({
+        service: "gmail",
+        auth: { user, pass },
+      });
+    }
+
     return nodemailer.createTransport({
       host,
       port,
@@ -31,7 +38,6 @@ const getTransporter = () => {
     });
   }
 
-  // Fallback: If no SMTP credentials in .env, create transporter or return null
   return null;
 };
 
@@ -95,9 +101,9 @@ const sendOtpEmail = async (toEmail, otpCode, recipientName, roleLabel) => {
   `;
 
   if (transporter) {
-    const fromAddress =
-      process.env.SMTP_FROM ||
-      `"Red Carpet Support" <${process.env.SMTP_USER || "no-reply@redcarpet.com"}>`;
+    const fromAddress = process.env.SMTP_USER
+      ? `"Red Carpet Support" <${process.env.SMTP_USER.trim()}>`
+      : process.env.SMTP_FROM || "no-reply@redcarpet.com";
 
     await transporter.sendMail({
       from: fromAddress,
