@@ -1,39 +1,7 @@
-const mongoose = require("mongoose");
+/**
+ * Backward-Compatible Shop Model Wrapper
+ * Points to the clean Mall schema.
+ */
+const Mall = require("./Mall");
 
-const ShopSchema = new mongoose.Schema({
-  title: String,
-  description: String,
-  image: String,
-  email: String,
-  password: String,
-  role: String,
-  mallconpassword: String,
-  qrCodeUrl: String,
-  qrCodeSize: Number,
-  subscriptionStatus: {
-    type: String,
-    enum: ["active", "inactive"],
-    default: "active",
-  },
-  menuItems: [
-    {
-      name: String,
-      image: String,
-      description: String,
-      link: String,
-      email: String,
-      password: String,
-      role: String,
-      shopconpassword: String,
-      qrCodeUrl: String,
-      qrCodeSize: Number,
-      subscriptionStatus: {
-        type: String,
-        enum: ["active", "inactive"],
-        default: "active",
-      },
-    },
-  ],
-});
-
-module.exports = mongoose.model("Food", ShopSchema);
+module.exports = Mall;

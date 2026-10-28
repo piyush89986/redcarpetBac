@@ -1,13 +1,7 @@
-const  mongoose  = require('mongoose');
+/**
+ * Backward-Compatible DisplayModel Wrapper
+ * Points to the clean TvDisplay schema.
+ */
+const TvDisplay = require("./TvDisplay");
 
-const displaySchema = new mongoose.Schema({
-  backgroundImage: String,
-  phoenixText: String,
-  pText: String,
-  royalPassText: String,
-  displayid: String,
-});
-
-const DisplayModel = mongoose.model("Display", displaySchema);
-
-module.exports = DisplayModel;
+module.exports = TvDisplay;

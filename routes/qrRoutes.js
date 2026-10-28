@@ -16,8 +16,7 @@ const sanitizeQrUrl = (url, shopId) => {
   }
   if (
     url.includes("localhost") ||
-    url.includes("127.0.0.1") ||
-    url.includes("git-main-piyush-singh-tanwar-s-projects")
+    url.includes("127.0.0.1")
   ) {
     return url.replace(/^https?:\/\/[^/]+/, base);
   }
