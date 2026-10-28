@@ -66,16 +66,20 @@ router.post("/login", async (req, res) => {
       if (!isMatch) return res.status(400).json({ error: "Invalid password" });
     }
 
-    // Step 4: Find linked Shop
+    // Step 4: Find linked Shop / Store ID
     let shop = await Shop.findOne({ email });
-    if (!shop) {
-      shop = await Shop.findOne({ "menuItems.email": email });
-    }
+    let resolvedShopId = null;
 
     if (shop) {
-      console.log("User logged in. Shop ID:", shop._id);
+      resolvedShopId = shop._id;
+      console.log("Mall manager logged in. Mall ID:", resolvedShopId);
     } else {
-      console.log("No shop found for this user.");
+      const parentMall = await Shop.findOne({ "menuItems.email": email });
+      if (parentMall) {
+        const storeItem = parentMall.menuItems.find((i) => i.email === email);
+        resolvedShopId = storeItem ? storeItem._id : parentMall._id;
+        console.log("Store manager logged in. Store ID:", resolvedShopId, "Parent Mall:", parentMall.title);
+      }
     }
 
     // Step 5: Generate JWT Token with fallback secret
@@ -95,7 +99,7 @@ router.post("/login", async (req, res) => {
         email: user.email,
         role: user.role || "admin",
       },
-      shopId: shop ? shop._id : null,
+      shopId: resolvedShopId,
     });
   } catch (error) {
     console.error("Login error:", error);

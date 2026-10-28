@@ -14,6 +14,7 @@ const displayRoutes = require("./routes/displayRoutes"); // ✅ Add this line
 const forgotPasswordRoutes = require("./routes/forgotPasswordRoutes"); // Ensure path is correct
 const utilityRoutes = require("./routes/utilityRoute"); // Ensure path is correct
 const qrRoutes = require("./routes/qrRoutes");
+const analyticsRoutes = require("./routes/analyticsRoutes");
 const rateLimit = require("express-rate-limit");
 
 const bcrypt = require("bcryptjs");
@@ -190,6 +191,8 @@ app.use(express.urlencoded({ limit: "200mb", extended: true }));
 app.use("/api", dataRoutes);
 app.use("/api", displayRoutes);
 app.use("/api", qrRoutes);
+app.use("/api/analytics", analyticsRoutes);
+app.use("/api", analyticsRoutes);
 
 // // Schema and Model
 // const InfoSchema = new mongoose.Schema({
