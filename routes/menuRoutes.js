@@ -47,13 +47,23 @@ router.post("/shops/:id/menu", async (req, res) => {
     // ✅ Hash the password from req.body, not shop.password
     const hashedPassword = await bcrypt.hash(req.body.password, 10);
 
-    const userr = new ShopUser({
-      email: req.body.email,
-      password: hashedPassword, // ✅ Save the hashed password
-      role: req.body.role,
-    });
-
-    await userr.save();
+    let userr = await ShopUser.findOne({ email: req.body.email });
+    if (userr) {
+      userr.name = req.body.name || req.body.title || userr.name || "Store Staff";
+      userr.password = hashedPassword;
+      userr.role = req.body.role || userr.role || "shop";
+      userr.shopId = String(shop._id);
+      await userr.save();
+    } else {
+      userr = new ShopUser({
+        name: req.body.name || req.body.title || "Store Staff",
+        email: req.body.email,
+        password: hashedPassword,
+        role: req.body.role || "shop",
+        shopId: String(shop._id),
+      });
+      await userr.save();
+    }
     res.json(shop);
   } catch (err) {
     console.log(err);

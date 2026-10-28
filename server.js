@@ -777,13 +777,23 @@ app.post("/api/shops", async (req, res) => {
 
     await shop.save();
 
-    const user = new ShopUser({
-      email: shop.email,
-      password: hashedPassword, // Hashed password yahan bhi use ho raha
-      role: shop.role,
-    });
-
-    await user.save();
+    let user = await ShopUser.findOne({ email: shop.email });
+    if (user) {
+      user.name = shop.title || shop.name || user.name || "Mall Administrator";
+      user.password = hashedPassword;
+      user.role = shop.role || user.role || "admin";
+      user.shopId = String(shop._id);
+      await user.save();
+    } else {
+      user = new ShopUser({
+        name: shop.title || shop.name || "Mall Administrator",
+        email: shop.email,
+        password: hashedPassword,
+        role: shop.role || "admin",
+        shopId: String(shop._id),
+      });
+      await user.save();
+    }
 
     res.json(shop);
   } catch (error) {

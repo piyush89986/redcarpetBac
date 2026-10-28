@@ -8,7 +8,7 @@ const StoreItemSchema = new mongoose.Schema(
   {
     name: {
       type: String,
-      required: true,
+      default: "Store",
       trim: true,
     },
     category: {
