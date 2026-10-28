@@ -129,6 +129,14 @@ const MallSchema = new mongoose.Schema(
       type: Number,
       default: 240,
     },
+    // Plan metadata for external subscription / onboarding systems
+    plan: {
+      name: { type: String, default: "Standard Plan" },
+      tier: { type: String, default: "starter" },
+      maxStores: { type: Number, default: 25 },
+      status: { type: String, default: "active" },
+      expiresAt: { type: Date, default: null },
+    },
     // Stores / Retail outlets located within this complex
     menuItems: [StoreItemSchema],
   },

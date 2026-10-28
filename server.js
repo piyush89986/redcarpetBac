@@ -763,44 +763,138 @@ app.delete("/api/shops/delete-menu-item/:id/:name", async (req, res) => {
 //   res.json(shop);
 // });
 
-// hashed password hai ish mai
-app.post("/api/shops", async (req, res) => {
+/**
+ * Business / Mall Onboarding API Endpoint
+ * Called by external onboarding / CRM / billing systems to onboard a new business.
+ * Supports plan-based system metadata.
+ */
+const handleBusinessOnboard = async (req, res) => {
   try {
-    // Pehle password hash karo
-    const hashedPassword = await bcrypt.hash(req.body.password, 10);
+    const {
+      title,
+      businessName,
+      name,
+      email,
+      password,
+      city,
+      address,
+      contactPhone,
+      image,
+      description,
+      plan,
+      subscriptionStatus,
+    } = req.body;
 
-    // Ab hashed password ko shop object me save karo
-    const shop = new Shop({
-      ...req.body,
-      password: hashedPassword, // Hashed password assign kiya
+    const resolvedTitle = (title || businessName || name || "").trim();
+    const cleanEmail = (email || "").trim().toLowerCase();
+
+    if (!resolvedTitle) {
+      return res.status(400).json({
+        success: false,
+        error: "Business title / name is required.",
+      });
+    }
+
+    if (!cleanEmail) {
+      return res.status(400).json({
+        success: false,
+        error: "Business email is required.",
+      });
+    }
+
+    if (!password) {
+      return res.status(400).json({
+        success: false,
+        error: "Password is required for business administrator login.",
+      });
+    }
+
+    // Check if business with this email already exists
+    const existingMall = await Shop.findOne({ email: cleanEmail });
+    if (existingMall) {
+      return res.status(409).json({
+        success: false,
+        error: `A business with email '${cleanEmail}' is already registered.`,
+      });
+    }
+
+    // Hash password with bcrypt
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Build structured plan object if provided
+    const resolvedPlan = {
+      name: plan?.name || "Standard Plan",
+      tier: plan?.tier || "starter",
+      maxStores: plan?.maxStores || 25,
+      status: plan?.status || "active",
+      expiresAt: plan?.expiresAt ? new Date(plan.expiresAt) : null,
+    };
+
+    const newShop = new Shop({
+      title: resolvedTitle,
+      email: cleanEmail,
+      password: hashedPassword,
+      role: "admin", // All onboarded businesses have role: 'admin'
+      mallconpassword: password,
+      city: city || "",
+      address: address || "",
+      contactPhone: contactPhone || "",
+      image:
+        image ||
+        "https://images.unsplash.com/photo-1519567241046-7f570eee3ce6?w=1200&q=80",
+      description:
+        description || "Shopping complex & retail entertainment center",
+      subscriptionStatus: subscriptionStatus || "active",
+      plan: resolvedPlan,
+      menuItems: [],
     });
 
-    await shop.save();
+    await newShop.save();
 
-    let user = await ShopUser.findOne({ email: shop.email });
+    // Upsert User login credentials
+    let user = await ShopUser.findOne({ email: cleanEmail });
     if (user) {
-      user.name = shop.title || shop.name || user.name || "Mall Administrator";
+      user.name = resolvedTitle;
       user.password = hashedPassword;
-      user.role = shop.role || user.role || "admin";
-      user.shopId = String(shop._id);
+      user.role = "admin";
+      user.shopId = String(newShop._id);
       await user.save();
     } else {
       user = new ShopUser({
-        name: shop.title || shop.name || "Mall Administrator",
-        email: shop.email,
+        name: resolvedTitle,
+        email: cleanEmail,
         password: hashedPassword,
-        role: shop.role || "admin",
-        shopId: String(shop._id),
+        role: "admin",
+        shopId: String(newShop._id),
       });
       await user.save();
     }
 
-    res.json(shop);
+    return res.status(201).json({
+      success: true,
+      message: "Business successfully onboarded!",
+      business: {
+        id: String(newShop._id),
+        title: newShop.title,
+        email: newShop.email,
+        role: "admin",
+        subscriptionStatus: newShop.subscriptionStatus,
+        plan: newShop.plan,
+        dashboardUrl: `/branddashboard2/${newShop._id}`,
+      },
+    });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Internal Server Error" });
+    console.error("Business onboarding error:", error);
+    return res.status(500).json({
+      success: false,
+      error: "Internal Server Error during business onboarding",
+      details: error.message,
+    });
   }
-});
+};
+
+app.post("/api/business/onboard", handleBusinessOnboard);
+app.post("/api/shops", handleBusinessOnboard);
 
 app.delete("/api/shops/:id", async (req, res) => {
   try {

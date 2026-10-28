@@ -104,12 +104,27 @@ router.post("/track-scan", async (req, res) => {
 
 /**
  * GET /api/analytics/overview
- * Provides full platform-wide statistics for SuperAdmin
+ * Provides statistics:
+ * - If mallId / shopId is provided: Returns metrics scoped specifically to that business & its counters.
+ * - Otherwise: Returns platform overview.
  */
 router.get("/overview", async (req, res) => {
   try {
-    // 1. Fetch all malls and their stores
-    const allMalls = await Shop.find().lean();
+    const { mallId, shopId } = req.query;
+    const targetMallId = mallId || shopId;
+
+    // 1. Fetch malls
+    let allMalls = [];
+    if (targetMallId && mongoose.Types.ObjectId.isValid(targetMallId)) {
+      const singleMall = await Shop.findById(targetMallId).lean();
+      if (singleMall) {
+        allMalls = [singleMall];
+      }
+    }
+
+    if (allMalls.length === 0) {
+      allMalls = await Shop.find().lean();
+    }
 
     // 2. Total entities
     const totalMalls = allMalls.length;
@@ -144,6 +159,18 @@ router.get("/overview", async (req, res) => {
     const sevenDaysAgo = new Date(todayStart.getTime() - 6 * 24 * 60 * 60 * 1000);
     const fourteenDaysAgo = new Date(todayStart.getTime() - 13 * 24 * 60 * 60 * 1000);
 
+    // Scoped query filters if targeted for a specific mall
+    const scopedStoreIds = targetMallId && mallStoreIds[targetMallId] ? mallStoreIds[targetMallId] : [];
+    const scanFilter = (targetMallId && scopedStoreIds.length > 0)
+      ? { $or: [{ mallId: String(targetMallId) }, { shopId: { $in: scopedStoreIds.concat(String(targetMallId)) } }] }
+      : (targetMallId ? { $or: [{ mallId: String(targetMallId) }, { shopId: String(targetMallId) }] } : {});
+    const todayScanFilter = { ...scanFilter, scannedAt: { $gte: todayStart } };
+
+    const tokenFilter = (targetMallId && scopedStoreIds.length > 0)
+      ? { shopid: { $in: scopedStoreIds.concat(String(targetMallId)) } }
+      : (targetMallId ? { shopid: String(targetMallId) } : {});
+    const todayTokenFilter = { ...tokenFilter, createdAt: { $gte: todayStart } };
+
     // 4. Counts from DB
     const [
       totalScansInDb,
@@ -158,29 +185,32 @@ router.get("/overview", async (req, res) => {
       recentScans,
       recentTokens,
     ] = await Promise.all([
-      QrScanLog.countDocuments(),
-      QrScanLog.countDocuments({ scannedAt: { $gte: todayStart } }),
-      PhoenixUser.countDocuments(),
-      PhoenixUser.countDocuments({ createdAt: { $gte: todayStart } }),
+      QrScanLog.countDocuments(scanFilter),
+      QrScanLog.countDocuments(todayScanFilter),
+      PhoenixUser.countDocuments(tokenFilter),
+      PhoenixUser.countDocuments(todayTokenFilter),
       QrScanLog.aggregate([
+        ...(targetMallId ? [{ $match: scanFilter }] : []),
         { $group: { _id: "$shopId", count: { $sum: 1 }, lastAt: { $max: "$scannedAt" } } },
       ]),
       QrScanLog.aggregate([
+        ...(targetMallId ? [{ $match: scanFilter }] : []),
         { $group: { _id: "$mallId", count: { $sum: 1 } } },
       ]),
       PhoenixUser.aggregate([
+        ...(targetMallId ? [{ $match: tokenFilter }] : []),
         { $group: { _id: "$shopid", count: { $sum: 1 }, lastAt: { $max: "$createdAt" } } },
       ]),
       QrScanLog.aggregate([
-        { $match: { scannedAt: { $gte: todayStart } } },
+        { $match: todayScanFilter },
         { $group: { _id: "$shopId", count: { $sum: 1 } } },
       ]),
       PhoenixUser.aggregate([
-        { $match: { createdAt: { $gte: todayStart } } },
+        { $match: todayTokenFilter },
         { $group: { _id: "$shopid", count: { $sum: 1 } } },
       ]),
-      QrScanLog.find().sort({ scannedAt: -1 }).limit(15).lean(),
-      PhoenixUser.find().sort({ createdAt: -1 }).limit(15).lean(),
+      QrScanLog.find(scanFilter).sort({ scannedAt: -1 }).limit(15).lean(),
+      PhoenixUser.find(tokenFilter).sort({ createdAt: -1 }).limit(15).lean(),
     ]);
 
     // Build lookup maps
@@ -414,7 +444,14 @@ router.get("/overview", async (req, res) => {
             : totalTokensInDb > 0
             ? 82
             : 0,
-      },
+      businessInfo: targetMallId && allMalls.length === 1 ? {
+        id: allMalls[0]._id,
+        title: allMalls[0].title,
+        image: allMalls[0].image,
+        city: allMalls[0].city,
+        subscriptionStatus: allMalls[0].subscriptionStatus,
+        plan: allMalls[0].plan,
+      } : null,
       malls: mallsAnalytics,
       stores: storesAnalytics,
       dailyTrends,
