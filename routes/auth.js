@@ -30,64 +30,103 @@ router.post("/login", async (req, res) => {
       return res.status(400).json({ error: "Email and password are required" });
     }
 
-    let user = await User.findOne({ email });
+    const cleanEmail = email.trim().toLowerCase();
+    const emailRegex = new RegExp(`^${cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i");
 
-    // Step 1: Directly check in User collection
-    if (user) {
-      if (!user.password) {
-        return res.status(400).json({ error: "No password set for this account" });
-      }
-      const isMatch = await bcrypt.compare(password, user.password);
-      if (!isMatch) return res.status(400).json({ error: "Invalid password" });
-    } 
-    // Step 2: Check in Food/Shop collection if not found in User
-    else {
-      user = await Shop.findOne({ email });
+    // Look up across User, Mall, or Store menuItems
+    let user = await User.findOne({ email: emailRegex });
+    let mall = await Shop.findOne({ email: emailRegex });
+    let storeItem = null;
+    let parentMall = null;
 
-      if (!user) {
-        // Step 3: Check inside menuItems
-        user = await Shop.findOne({ "menuItems.email": email });
-
-        if (user) {
-          user = user.menuItems.find((item) => item.email === email);
-        }
-      }
-
-      // Agar ab bhi user na mile, return error
-      if (!user) {
-        return res.status(400).json({ error: "User not found" });
-      }
-
-      // MenuItems ya Shop schema se password match karna
-      if (!user.password) {
-        return res.status(400).json({ error: "No password set for this account" });
-      }
-      const isMatch = await bcrypt.compare(password, user.password);
-      if (!isMatch) return res.status(400).json({ error: "Invalid password" });
-    }
-
-    // Step 4: Find linked Shop / Store ID
-    let shop = await Shop.findOne({ email });
-    let resolvedShopId = null;
-
-    if (shop) {
-      resolvedShopId = shop._id;
-      console.log("Mall manager logged in. Mall ID:", resolvedShopId);
-    } else {
-      const parentMall = await Shop.findOne({ "menuItems.email": email });
+    if (!mall) {
+      parentMall = await Shop.findOne({ "menuItems.email": emailRegex });
       if (parentMall) {
-        const storeItem = parentMall.menuItems.find((i) => i.email === email);
-        resolvedShopId = storeItem ? storeItem._id : parentMall._id;
-        console.log("Store manager logged in. Store ID:", resolvedShopId, "Parent Mall:", parentMall.title);
+        storeItem = parentMall.menuItems.find(
+          (item) => item.email && item.email.toLowerCase() === cleanEmail
+        );
       }
     }
 
-    // Step 5: Generate JWT Token with fallback secret
+    if (!user && !mall && !storeItem) {
+      return res.status(400).json({ error: "User not found" });
+    }
+
+    // Verify password across records
+    let isMatch = false;
+    let effectiveHashedPassword = null;
+
+    // 1. Check in User collection
+    if (user && user.password) {
+      isMatch = await bcrypt.compare(password, user.password);
+      if (isMatch) effectiveHashedPassword = user.password;
+    }
+
+    // 2. If no match yet, check in Mall collection
+    if (!isMatch && mall && mall.password) {
+      isMatch = await bcrypt.compare(password, mall.password);
+      if (isMatch) effectiveHashedPassword = mall.password;
+    }
+
+    // 3. If no match yet, check in Store / menuItems
+    if (!isMatch && storeItem && storeItem.password) {
+      isMatch = await bcrypt.compare(password, storeItem.password);
+      if (isMatch) effectiveHashedPassword = storeItem.password;
+    }
+
+    // 4. Legacy plain-text fallback (in case plain-text was stored)
+    if (!isMatch) {
+      if (mall && mall.mallconpassword === password) {
+        isMatch = true;
+        effectiveHashedPassword = await bcrypt.hash(password, 10);
+      } else if (storeItem && storeItem.shopconpassword === password) {
+        isMatch = true;
+        effectiveHashedPassword = await bcrypt.hash(password, 10);
+      }
+    }
+
+    if (!isMatch) {
+      return res.status(400).json({ error: "Invalid password" });
+    }
+
+    // Auto-sync User document so both collections remain completely in sync
+    if (effectiveHashedPassword) {
+      if (user) {
+        if (user.password !== effectiveHashedPassword) {
+          user.password = effectiveHashedPassword;
+          await user.save();
+        }
+      } else {
+        user = new User({
+          name: mall ? mall.title : (storeItem ? storeItem.name : "Portal User"),
+          email: cleanEmail,
+          password: effectiveHashedPassword,
+          role: mall ? mall.role : (storeItem ? storeItem.role : "admin"),
+          shopId: mall ? String(mall._id) : (storeItem ? String(storeItem._id) : null),
+        });
+        await user.save();
+      }
+    }
+
+    // Resolve shopId
+    let resolvedShopId = null;
+    if (mall) {
+      resolvedShopId = mall._id;
+    } else if (storeItem) {
+      resolvedShopId = storeItem._id || (parentMall ? parentMall._id : null);
+    } else if (user && user.shopId) {
+      resolvedShopId = user.shopId;
+    }
+
+    const effectiveRole = user?.role || mall?.role || storeItem?.role || "admin";
+    const effectiveName = user?.name || mall?.title || storeItem?.name || "";
+
+    // Generate JWT Token
     const jwtSecret =
       process.env.JWT_SECRET || "kjsdrjhjrsdbuydtkjmgujt_redcarpet_default_secret";
 
     const token = jwt.sign(
-      { userId: user._id || "", role: user.role || "admin" },
+      { userId: (user ? user._id : (mall ? mall._id : "")) || "", role: effectiveRole },
       jwtSecret,
       { expiresIn: "7d" }
     );
@@ -95,9 +134,9 @@ router.post("/login", async (req, res) => {
     res.json({
       token,
       user: {
-        name: user.name || user.title || "",
-        email: user.email,
-        role: user.role || "admin",
+        name: effectiveName,
+        email: cleanEmail,
+        role: effectiveRole,
       },
       shopId: resolvedShopId,
     });

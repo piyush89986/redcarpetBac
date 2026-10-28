@@ -332,62 +332,55 @@ router.post(["/forgot-password/reset-password", "/reset-password"], async (req, 
 
     // Hash password with bcrypt
     const hashedPassword = await bcrypt.hash(newPassword, 10);
-    let updated = false;
+    const emailRegex = new RegExp(`^${cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i");
 
-    // 1. Update in Mall (foods) collection (for Mall Managers)
-    const mallUpdate = await Mall.findOneAndUpdate(
-      { email: cleanEmail },
+    // 1. Update in User collection (used by auth.js)
+    const userUpdate = await User.updateMany(
+      { email: emailRegex },
+      { $set: { password: hashedPassword } }
+    );
+
+    // 2. Update in Mall (foods) collection (for Mall Managers)
+    const mallUpdate = await Mall.updateMany(
+      { email: emailRegex },
       {
         $set: {
           password: hashedPassword,
           mallconpassword: newPassword,
         },
-      },
-      { new: true }
+      }
     );
-    if (mallUpdate) updated = true;
 
-    // 2. Update inside menuItems (for Store Counter Managers)
-    if (!updated) {
-      const parentMallUpdate = await Mall.findOneAndUpdate(
-        { "menuItems.email": cleanEmail },
-        {
-          $set: {
-            "menuItems.$.password": hashedPassword,
-            "menuItems.$.shopconpassword": newPassword,
-          },
+    // 3. Update inside menuItems (for Store Counter Managers)
+    const menuUpdate = await Mall.updateMany(
+      { "menuItems.email": emailRegex },
+      {
+        $set: {
+          "menuItems.$[elem].password": hashedPassword,
+          "menuItems.$[elem].shopconpassword": newPassword,
         },
-        { new: true }
-      );
-      if (parentMallUpdate) updated = true;
-    }
+      },
+      { arrayFilters: [{ "elem.email": emailRegex }] }
+    );
 
-    // 3. Update in Store collection
-    if (!updated) {
-      const storeUpdate = await Store.findOneAndUpdate(
-        { email: cleanEmail },
-        {
-          $set: {
-            password: hashedPassword,
-            shopconpassword: newPassword,
-          },
+    // 4. Update in Store collection
+    const storeUpdate = await Store.updateMany(
+      { email: emailRegex },
+      {
+        $set: {
+          password: hashedPassword,
+          shopconpassword: newPassword,
         },
-        { new: true }
-      );
-      if (storeUpdate) updated = true;
-    }
+      }
+    );
 
-    // 4. Update in User collection
-    if (!updated) {
-      const userUpdate = await User.findOneAndUpdate(
-        { email: cleanEmail },
-        { $set: { password: hashedPassword } },
-        { new: true }
-      );
-      if (userUpdate) updated = true;
-    }
+    const totalModified =
+      (userUpdate.matchedCount || userUpdate.n || 0) +
+      (mallUpdate.matchedCount || mallUpdate.n || 0) +
+      (menuUpdate.matchedCount || menuUpdate.n || 0) +
+      (storeUpdate.matchedCount || storeUpdate.n || 0);
 
-    if (!updated) {
+    if (totalModified === 0) {
       return res.status(404).json({
         success: false,
         message: "User account could not be found to update password.",
