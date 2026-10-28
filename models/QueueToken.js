@@ -64,7 +64,7 @@ const QueueTokenSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-    collection: "phoenixusers", // Bound to existing collection in MongoDB Atlas
+    collection: "queuetokens",
   }
 );
 

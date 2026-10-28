@@ -42,7 +42,7 @@ const TvDisplaySchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-    collection: "displays",
+    collection: "tvdisplays",
   }
 );
 

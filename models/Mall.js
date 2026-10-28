@@ -134,7 +134,7 @@ const MallSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-    collection: "foods", // Bound to existing collection in MongoDB Atlas
+    collection: "malls",
   }
 );
 
