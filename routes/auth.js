@@ -121,6 +121,18 @@ router.post("/login", async (req, res) => {
     const effectiveRole = user?.role || mall?.role || storeItem?.role || "admin";
     const effectiveName = user?.name || mall?.title || storeItem?.name || "";
 
+    // SuperAdmin role is permanently deprecated. Only Business Managers and Store Counters are permitted.
+    if (
+      effectiveRole === "superadmin" ||
+      user?.role === "superadmin" ||
+      cleanEmail.includes("superadmin")
+    ) {
+      return res.status(403).json({
+        error:
+          "SuperAdmin access has been permanently removed. Only Business Managers and Store Counters can access the system.",
+      });
+    }
+
     // Generate JWT Token
     const jwtSecret =
       process.env.JWT_SECRET || "kjsdrjhjrsdbuydtkjmgujt_redcarpet_default_secret";

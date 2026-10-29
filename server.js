@@ -267,48 +267,108 @@ app.post("/api/information", async (req, res) => {
 });
 
 // Countdown Schema
+// Countdown Schema for Live TV Screen & Dispatch
 const CountdownSchema = new mongoose.Schema({
   startTime: Number,
   duration: Number,
   shopId: String,
+  token: String,
+  name: String,
+  storeName: String,
+  mallTitle: String,
+  createdAt: { type: Date, default: Date.now },
 });
-const Countdown = mongoose.model("Countdown", CountdownSchema);
+const Countdown = mongoose.models.Countdown || mongoose.model("Countdown", CountdownSchema);
 
-// Start Countdown API
+// Start Countdown & Broadcast Token Call to Live TV Screens
 app.post("/api/start-countdown", async (req, res) => {
-  const { duration, phoneNumber, shopId } = req.body;
+  const { duration, phoneNumber, shopId, token, name, storeName, mallTitle } = req.body;
   const startTime = Date.now();
+  const safeDuration = Number(duration) || 180;
 
   try {
-    const newCountdown = new Countdown({ startTime, duration, shopId });
+    const newCountdown = new Countdown({
+      startTime,
+      duration: safeDuration,
+      shopId: String(shopId || ""),
+      token: String(token || ""),
+      name: name || "Valued Guest",
+      storeName: storeName || "",
+      mallTitle: mallTitle || "",
+    });
     await newCountdown.save();
 
-    // Emit countdown start event
-    io.emit("countdown-start", { startTime, duration, shopId });
-
-    // Twilio SMS Notification
-    const frontendUrl = (process.env.FRONTEND_URL || process.env.REACT_APP_API_BASE_URL || "https://redcarpet-fr.vercel.app").replace(/\/+$/, "");
-    const countdownLink = `${frontendUrl}/countdown/${shopId || ":id"}`;
-    await client.messages.create({
-      body: `Countdown started! Track live here: ${countdownLink}`,
-      from: process.env.TWILIO_PHONE,
-      to: phoneNumber,
+    // Broadcast real-time event to all connected TV screens and customer web pages
+    io.emit("countdown-start", {
+      startTime,
+      duration: safeDuration,
+      shopId: String(shopId || ""),
+      token: String(token || ""),
+      name: name || "Valued Guest",
+      storeName: storeName || "",
+      mallTitle: mallTitle || "",
     });
 
-    res.json({ message: "Countdown started", startTime, duration });
+    // Optional Twilio SMS Notification
+    if (phoneNumber && process.env.IS_OTP_SERVICE_AVAILABLE === "true" && client) {
+      try {
+        const frontendUrl = (
+          process.env.FRONTEND_URL ||
+          process.env.REACT_APP_API_BASE_URL ||
+          "https://redcarpet-fr.vercel.app"
+        ).replace(/\/+$/, "");
+        const countdownLink = `${frontendUrl}/${shopId || ":id"}/countdown`;
+        const formattedTo = String(phoneNumber).startsWith("+")
+          ? phoneNumber
+          : `+91${String(phoneNumber).replace(/\D/g, "")}`;
+
+        await client.messages.create({
+          body: `Token #${token} is now called! Track live on TV here: ${countdownLink}`,
+          from: process.env.TWILIO_PHONE,
+          to: formattedTo,
+        });
+      } catch (smsErr) {
+        console.warn("SMS dispatch notice skipped/failed:", smsErr.message);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: "Countdown started and broadcasted to TV",
+      startTime,
+      duration: safeDuration,
+      token,
+      name,
+      shopId,
+    });
   } catch (error) {
     console.error("Error starting countdown:", error);
-    res.status(500).json({ message: "Error starting countdown", error });
+    res.status(500).json({ message: "Error starting countdown", error: error.message });
   }
 });
 
-// Get Current Countdown
-app.get("/api/get-countdown", async (req, res) => {
+// Get Current Countdown (filtered by shopId if provided via query or URL param)
+app.get(["/api/get-countdown", "/api/get-countdown/:id"], async (req, res) => {
   try {
-    const countdown = await Countdown.findOne();
-    res.json(countdown);
+    const targetShopId = req.params.id || req.query.shopId;
+    const query = targetShopId ? { shopId: String(targetShopId) } : {};
+    const countdown = await Countdown.findOne(query).sort({ startTime: -1 }).lean();
+
+    if (!countdown) {
+      return res.json({ active: false });
+    }
+
+    const elapsed = Math.floor((Date.now() - countdown.startTime) / 1000);
+    const duration = countdown.duration || 180;
+    const active = elapsed < duration;
+
+    res.json({
+      ...countdown,
+      active,
+      remaining: Math.max(0, duration - elapsed),
+    });
   } catch (error) {
-    res.status(500).json({ message: "Error fetching countdown", error });
+    res.status(500).json({ message: "Error fetching countdown", error: error.message });
   }
 });
 

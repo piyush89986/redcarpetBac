@@ -113,20 +113,32 @@ router.get("/overview", async (req, res) => {
     const { mallId, shopId } = req.query;
     const targetMallId = mallId || shopId;
 
-    // 1. Fetch malls
+    // 1. Fetch mall scoped strictly to the manager's business
     let allMalls = [];
+    let resolvedMallId = null;
+
     if (targetMallId && mongoose.Types.ObjectId.isValid(targetMallId)) {
-      const singleMall = await Shop.findById(targetMallId).lean();
+      let singleMall = await Shop.findById(targetMallId).lean();
+      if (!singleMall) {
+        // In case targetMallId is a store ID inside a mall
+        singleMall = await Shop.findOne({ "menuItems._id": targetMallId }).lean();
+      }
       if (singleMall) {
         allMalls = [singleMall];
+        resolvedMallId = singleMall._id.toString();
       }
     }
 
+    // Default to the first mall if no specific ID provided (never expose all 16 malls across the system)
     if (allMalls.length === 0) {
-      allMalls = await Shop.find().lean();
+      const defaultMall = await Shop.findOne().lean();
+      if (defaultMall) {
+        allMalls = [defaultMall];
+        resolvedMallId = defaultMall._id.toString();
+      }
     }
 
-    // 2. Total entities
+    // 2. Total entities for this specific business
     const totalMalls = allMalls.length;
     let totalStores = 0;
     const storeMap = {};
@@ -159,16 +171,18 @@ router.get("/overview", async (req, res) => {
     const sevenDaysAgo = new Date(todayStart.getTime() - 6 * 24 * 60 * 60 * 1000);
     const fourteenDaysAgo = new Date(todayStart.getTime() - 13 * 24 * 60 * 60 * 1000);
 
-    // Scoped query filters if targeted for a specific mall
-    const scopedStoreIds = targetMallId && mallStoreIds[targetMallId] ? mallStoreIds[targetMallId] : [];
-    const scanFilter = (targetMallId && scopedStoreIds.length > 0)
-      ? { $or: [{ mallId: String(targetMallId) }, { shopId: { $in: scopedStoreIds.concat(String(targetMallId)) } }] }
-      : (targetMallId ? { $or: [{ mallId: String(targetMallId) }, { shopId: String(targetMallId) }] } : {});
+    // Scoped query filters strictly for this mall and its counters
+    const scopedStoreIds = resolvedMallId && mallStoreIds[resolvedMallId] ? mallStoreIds[resolvedMallId] : [];
+    const allScopedIds = [resolvedMallId, ...scopedStoreIds].filter(Boolean).map(String);
+
+    const scanFilter = allScopedIds.length > 0
+      ? { $or: [{ mallId: { $in: allScopedIds } }, { shopId: { $in: allScopedIds } }] }
+      : {};
     const todayScanFilter = { ...scanFilter, scannedAt: { $gte: todayStart } };
 
-    const tokenFilter = (targetMallId && scopedStoreIds.length > 0)
-      ? { shopid: { $in: scopedStoreIds.concat(String(targetMallId)) } }
-      : (targetMallId ? { shopid: String(targetMallId) } : {});
+    const tokenFilter = allScopedIds.length > 0
+      ? { $or: [{ shopid: { $in: allScopedIds } }, { mallId: { $in: allScopedIds } }] }
+      : {};
     const todayTokenFilter = { ...tokenFilter, createdAt: { $gte: todayStart } };
 
     // 4. Counts from DB
@@ -429,6 +443,14 @@ router.get("/overview", async (req, res) => {
     return res.status(200).json({
       success: true,
       timestamp: new Date(),
+      businessInfo: allMalls.length > 0 ? {
+        id: allMalls[0]._id,
+        title: allMalls[0].title,
+        image: allMalls[0].image,
+        city: allMalls[0].city,
+        subscriptionStatus: allMalls[0].subscriptionStatus,
+        plan: allMalls[0].plan,
+      } : null,
       metrics: {
         totalMalls,
         activeMalls: activeMallsCount,
@@ -444,14 +466,7 @@ router.get("/overview", async (req, res) => {
             : totalTokensInDb > 0
             ? 82
             : 0,
-      businessInfo: targetMallId && allMalls.length === 1 ? {
-        id: allMalls[0]._id,
-        title: allMalls[0].title,
-        image: allMalls[0].image,
-        city: allMalls[0].city,
-        subscriptionStatus: allMalls[0].subscriptionStatus,
-        plan: allMalls[0].plan,
-      } : null,
+      },
       malls: mallsAnalytics,
       stores: storesAnalytics,
       dailyTrends,
