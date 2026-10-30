@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const Shop = require("../models/Shop");
+const { Mall: Shop, Store } = require("../models/pg");
 
 // ✅ Fetch all shops
 router.get("/api/shops", async (req, res) => {
@@ -63,15 +63,13 @@ router.get("/api/shops/:id/menu", async (req, res) => {
   }
 });
 
-const mongoose = require("mongoose");
-
 // ✅ Fetch a single shop or store item along with details
 router.get("/api/shops/:id", async (req, res) => {
   try {
     const { id } = req.params;
     let shop = null;
 
-    if (mongoose.Types.ObjectId.isValid(id)) {
+    if (id) {
       shop = await Shop.findById(id);
 
       // If not a top-level mall, check if it's a specific store inside a mall

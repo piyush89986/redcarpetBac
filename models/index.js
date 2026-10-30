@@ -1,17 +1,8 @@
 /**
  * Central Database Models Registry
- * Cleanly exports all distinct domain models by their functional purpose.
+ * Re-routes all legacy models to PostgreSQL (Sequelize)
  */
-const Mall = require("./Mall");
-const Store = require("./Store");
-const User = require("./User");
-const QueueToken = require("./QueueToken");
-const QrConfig = require("./QrConfig");
-const QrScanLog = require("./QrScanLog");
-const TvDisplay = require("./TvDisplay");
-
-module.exports = {
-  // Domain Schemas
+const {
   Mall,
   Store,
   User,
@@ -19,6 +10,21 @@ module.exports = {
   QrConfig,
   QrScanLog,
   TvDisplay,
+  Countdown,
+  sequelize,
+} = require("./pg");
+
+module.exports = {
+  // Domain PostgreSQL Models
+  Mall,
+  Store,
+  User,
+  QueueToken,
+  QrConfig,
+  QrScanLog,
+  TvDisplay,
+  Countdown,
+  sequelize,
 
   // Backward-compatibility aliases
   Shop: Mall,

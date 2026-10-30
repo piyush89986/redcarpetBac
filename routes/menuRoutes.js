@@ -1,7 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const Shop = require("../models/Shop");
-const ShopUser = require("../models/User");
+const { Mall: Shop, User: ShopUser } = require("../models/pg");
 const bcrypt = require("bcryptjs");
 
 

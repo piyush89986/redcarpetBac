@@ -1,22 +1,36 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const User = require("../models/User");
-const Shop = require("../models/Shop"); //......................................................
+const { Op } = require("sequelize");
+const { User, Mall, Store } = require("../models/pg");
 
 const router = express.Router();
 
-
+// **Signup Route**
 router.post("/signup", async (req, res) => {
-  const { name, email, password,role } = req.body;
-  console.log(req.body);
-  const hashedPassword = await bcrypt.hash(password, 10);
+  const { name, email, password, role } = req.body;
   try {
-    const newUser = new User({ name, email, password: hashedPassword,role });
-    await newUser.save();
-    res.json({ message: "User registered successfully" });
+    if (!email || !password) {
+      return res.status(400).json({ error: "Email and password are required" });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    const existing = await User.findOne({ where: { email: cleanEmail } });
+    if (existing) {
+      return res.status(400).json({ error: "Email already exists" });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const newUser = await User.create({
+      name: name || "User",
+      email: cleanEmail,
+      password: hashedPassword,
+      role: role || "admin",
+    });
+
+    res.json({ message: "User registered successfully", user: { id: newUser.id, email: newUser.email } });
   } catch (error) {
-    console.log(error);
+    console.error("Signup error:", error);
     res.status(400).json({ error: error.message });
   }
 });
@@ -31,22 +45,11 @@ router.post("/login", async (req, res) => {
     }
 
     const cleanEmail = email.trim().toLowerCase();
-    const emailRegex = new RegExp(`^${cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i");
 
-    // Look up across User, Mall, or Store menuItems
-    let user = await User.findOne({ email: emailRegex });
-    let mall = await Shop.findOne({ email: emailRegex });
-    let storeItem = null;
-    let parentMall = null;
-
-    if (!mall) {
-      parentMall = await Shop.findOne({ "menuItems.email": emailRegex });
-      if (parentMall) {
-        storeItem = parentMall.menuItems.find(
-          (item) => item.email && item.email.toLowerCase() === cleanEmail
-        );
-      }
-    }
+    // Look up across User, Mall, or Store
+    let user = await User.findOne({ where: { email: cleanEmail } });
+    let mall = await Mall.findOne({ where: { email: cleanEmail } });
+    let storeItem = await Store.findOne({ where: { email: cleanEmail } });
 
     if (!user && !mall && !storeItem) {
       return res.status(400).json({ error: "User not found" });
@@ -56,25 +59,22 @@ router.post("/login", async (req, res) => {
     let isMatch = false;
     let effectiveHashedPassword = null;
 
-    // 1. Check in User collection
     if (user && user.password) {
       isMatch = await bcrypt.compare(password, user.password);
       if (isMatch) effectiveHashedPassword = user.password;
     }
 
-    // 2. If no match yet, check in Mall collection
     if (!isMatch && mall && mall.password) {
       isMatch = await bcrypt.compare(password, mall.password);
       if (isMatch) effectiveHashedPassword = mall.password;
     }
 
-    // 3. If no match yet, check in Store / menuItems
     if (!isMatch && storeItem && storeItem.password) {
       isMatch = await bcrypt.compare(password, storeItem.password);
       if (isMatch) effectiveHashedPassword = storeItem.password;
     }
 
-    // 4. Legacy plain-text fallback (in case plain-text was stored)
+    // Legacy plain-text fallback
     if (!isMatch) {
       if (mall && mall.mallconpassword === password) {
         isMatch = true;
@@ -89,7 +89,7 @@ router.post("/login", async (req, res) => {
       return res.status(400).json({ error: "Invalid password" });
     }
 
-    // Auto-sync User document so both collections remain completely in sync
+    // Auto-sync User record in PostgreSQL
     if (effectiveHashedPassword) {
       if (user) {
         if (user.password !== effectiveHashedPassword) {
@@ -97,66 +97,62 @@ router.post("/login", async (req, res) => {
           await user.save();
         }
       } else {
-        user = new User({
-          name: mall ? mall.title : (storeItem ? storeItem.name : "Portal User"),
+        user = await User.create({
+          name: mall?.title || storeItem?.name || "User",
           email: cleanEmail,
           password: effectiveHashedPassword,
-          role: mall ? mall.role : (storeItem ? storeItem.role : "admin"),
-          shopId: mall ? String(mall._id) : (storeItem ? String(storeItem._id) : null),
+          role: mall ? "admin" : storeItem ? "shop admin" : "admin",
+          shopId: storeItem ? storeItem.id : mall ? mall.id : null,
+          mallId: storeItem ? storeItem.mallId : mall ? mall.id : null,
         });
-        await user.save();
       }
     }
 
-    // Resolve shopId
-    let resolvedShopId = null;
-    if (mall) {
-      resolvedShopId = mall._id;
-    } else if (storeItem) {
-      resolvedShopId = storeItem._id || (parentMall ? parentMall._id : null);
-    } else if (user && user.shopId) {
-      resolvedShopId = user.shopId;
-    }
-
-    const effectiveRole = user?.role || mall?.role || storeItem?.role || "admin";
-    const effectiveName = user?.name || mall?.title || storeItem?.name || "";
-
-    // SuperAdmin role is permanently deprecated. Only Business Managers and Store Counters are permitted.
-    if (
-      effectiveRole === "superadmin" ||
-      user?.role === "superadmin" ||
-      cleanEmail.includes("superadmin")
-    ) {
-      return res.status(403).json({
-        error:
-          "SuperAdmin access has been permanently removed. Only Business Managers and Store Counters can access the system.",
-      });
-    }
-
-    // Generate JWT Token
-    const jwtSecret =
-      process.env.JWT_SECRET || "kjsdrjhjrsdbuydtkjmgujt_redcarpet_default_secret";
-
     const token = jwt.sign(
-      { userId: (user ? user._id : (mall ? mall._id : "")) || "", role: effectiveRole },
-      jwtSecret,
+      {
+        userId: user ? user.id : mall ? mall.id : storeItem.id,
+        email: cleanEmail,
+        role: user?.role || (mall ? "admin" : "shop admin"),
+      },
+      process.env.JWT_SECRET || "default_secret_key",
       { expiresIn: "7d" }
     );
 
-    res.json({
+    let returnRole = "admin";
+    let returnShopId = null;
+    let returnMallId = null;
+
+    if (mall) {
+      returnRole = "admin";
+      returnShopId = mall.id;
+      returnMallId = mall.id;
+    } else if (storeItem) {
+      returnRole = "shop admin";
+      returnShopId = storeItem.id;
+      returnMallId = storeItem.mallId;
+    } else if (user) {
+      returnRole = user.role || "admin";
+      returnShopId = user.shopId || null;
+      returnMallId = user.mallId || null;
+    }
+
+    res.status(200).json({
+      message: "Login successful",
       token,
+      role: returnRole,
+      shopId: returnShopId,
+      mallId: returnMallId,
       user: {
-        name: effectiveName,
+        id: user ? user.id : mall ? mall.id : storeItem.id,
         email: cleanEmail,
-        role: effectiveRole,
+        role: returnRole,
+        name: user?.name || mall?.title || storeItem?.name || "User",
       },
-      shopId: resolvedShopId,
     });
   } catch (error) {
     console.error("Login error:", error);
-    res.status(500).json({ error: error.message || "Internal Server Error" });
+    res.status(500).json({ error: "Internal server error during login" });
   }
 });
-
 
 module.exports = router;

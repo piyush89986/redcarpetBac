@@ -1,7 +1,7 @@
 
 const express = require('express');
 const router = express.Router();
-const DisplayModel = require("../models/DisplayModel");
+const { TvDisplay: DisplayModel } = require("../models/pg");
 
 
 // ✅ API to insert 

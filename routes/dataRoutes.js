@@ -1,7 +1,7 @@
 
 const express = require('express');
 const router = express.Router();
-const Data = require('../models/data');
+const { QueueToken: Data } = require('../models/pg');
 
 // Route to get active live queue data (refreshed for last 12 hours per shop)
 router.get('/get-data/:id', async (req, res) => {

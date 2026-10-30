@@ -1,11 +1,9 @@
 const express = require("express");
-const mongoose = require("mongoose");
 const cors = require("cors");
 const bodyParser = require("body-parser");
+const { sequelize, User: ShopUser, QueueToken: User, Mall: Shop, Countdown } = require("./models/pg");
 const dataRoutes = require("./routes/dataRoutes");
 const twilio = require("twilio");
-const User = require("./models/data");
-const ShopUser = require("./models/User");
 const http = require("http");
 const socketIo = require("socket.io");
 const authRoutes = require("./routes/auth");
@@ -165,14 +163,17 @@ app.use("/api", forgotPasswordRoutes);
 app.use("/api", utilityRoutes);
 
 
-// Database Connection
-mongoose
-  .connect(process.env.MONGO_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
+// Database Connection (PostgreSQL)
+sequelize
+  .authenticate()
+  .then(() => {
+    console.log("PostgreSQL Connected Successfully via Sequelize");
+    return sequelize.sync({ alter: false });
   })
-  .then(() => console.log("MongoDB Connected"))
-  .catch((err) => console.log("Error: ", err));
+  .then(() => console.log("PostgreSQL Tables Synchronized"))
+  .catch((err) => {
+    console.error("PostgreSQL Connection Warning / Waiting for DB setup:", err.message);
+  });
 
 const server = http.createServer(app);
 const io = socketIo(server, {
@@ -194,33 +195,6 @@ app.use("/api", qrRoutes);
 app.use("/api/analytics", analyticsRoutes);
 app.use("/api", analyticsRoutes);
 
-// // Schema and Model
-// const InfoSchema = new mongoose.Schema({
-//   name: { type: String, required: true },
-//   mobile: { type: String, required: true },
-//   email: { type: String, required: true },
-//   token: { type: Number, required: true },
-// });
-
-// const Info = mongoose.model("Info", InfoSchema);
-
-// // Schema
-// const displaySchema = new mongoose.Schema({
-//   backgroundImage: String,
-//   phoenixText: String,
-//   pText: String,
-//   royalPassText: String,
-//   displayid: String,
-// });
-// const DisplayModel = mongoose.model("Display", displaySchema);
-
-// const ShopSchema = new mongoose.Schema({
-//   title: String,
-//   description: String,
-//   image: String,
-// });
-
-const Shop = require("./models/Shop"); // ✅ Ensure single import
 const {
   NetworkAccessProfileNetworkContextImpl,
 } = require("twilio/lib/rest/supersim/v1/networkAccessProfile/networkAccessProfileNetwork");
@@ -265,20 +239,6 @@ app.post("/api/information", async (req, res) => {
     res.status(500).json({ message: "Error saving data", error: err });
   }
 });
-
-// Countdown Schema
-// Countdown Schema for Live TV Screen & Dispatch
-const CountdownSchema = new mongoose.Schema({
-  startTime: Number,
-  duration: Number,
-  shopId: String,
-  token: String,
-  name: String,
-  storeName: String,
-  mallTitle: String,
-  createdAt: { type: Date, default: Date.now },
-});
-const Countdown = mongoose.models.Countdown || mongoose.model("Countdown", CountdownSchema);
 
 // Start Countdown & Broadcast Token Call to Live TV Screens
 app.post("/api/start-countdown", async (req, res) => {
@@ -669,7 +629,7 @@ const handleSubscriptionToggle = async (req, res) => {
 
   try {
     // 1. Try finding and updating top-level Mall / Shop
-    if (mongoose.Types.ObjectId.isValid(id)) {
+    if (id) {
       let shop = await Shop.findById(id);
       if (shop) {
         shop.subscriptionStatus = subscriptionStatus;

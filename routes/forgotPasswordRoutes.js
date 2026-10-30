@@ -2,9 +2,7 @@ const express = require("express");
 const router = express.Router();
 const bcrypt = require("bcryptjs");
 const nodemailer = require("nodemailer");
-const Mall = require("../models/Mall");
-const Store = require("../models/Store");
-const User = require("../models/User");
+const { Mall, Store, User } = require("../models/pg");
 
 // In-memory OTP storage with 10-minute expiry
 // Key: email (lowercase), Value: { otp, expiresAt, role, targetType, targetId }

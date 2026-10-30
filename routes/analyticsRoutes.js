@@ -1,15 +1,14 @@
 const express = require("express");
 const router = express.Router();
-const mongoose = require("mongoose");
-const Shop = require("../models/Shop");
-const PhoenixUser = require("../models/data");
-const QrScanLog = require("../models/QrScanLog");
+const { Mall, Store, QueueToken, QrScanLog } = require("../models/pg");
+const Shop = Mall;
+const PhoenixUser = QueueToken;
 
 /**
  * Helper: Resolve shop or mall details given an ID
  */
 async function resolveLocation(targetId) {
-  if (!targetId || !mongoose.Types.ObjectId.isValid(targetId)) {
+  if (!targetId) {
     return {
       shopName: "General QR Location",
       mallName: "Red Carpet Platform",
@@ -19,30 +18,29 @@ async function resolveLocation(targetId) {
   }
 
   // 1. Is it a Mall?
-  const mall = await Shop.findById(targetId);
+  const mall = await Mall.findByPk(targetId);
   if (mall) {
     return {
       shopName: mall.title || "Mall Complex",
       mallName: mall.title || "Mall Complex",
-      mallId: mall._id.toString(),
+      mallId: mall.id,
       isStore: false,
     };
   }
 
   // 2. Is it a Store inside a Mall?
-  const parentMall = await Shop.findOne({ "menuItems._id": targetId });
-  if (parentMall) {
-    const item = parentMall.menuItems.id(targetId);
+  const store = await Store.findByPk(targetId, { include: ["mall"] });
+  if (store) {
     return {
-      shopName: item?.name || "Store Counter",
-      mallName: parentMall.title || "Mall Complex",
-      mallId: parentMall._id.toString(),
+      shopName: store.name || "Store Counter",
+      mallName: store.mall?.title || "Mall Complex",
+      mallId: store.mallId,
       isStore: true,
     };
   }
 
   return {
-    shopName: "Store / Counter " + targetId.slice(-4),
+    shopName: "Store / Counter " + String(targetId).slice(-4),
     mallName: "Partner Complex",
     mallId: "",
     isStore: false,
@@ -117,24 +115,26 @@ router.get("/overview", async (req, res) => {
     let allMalls = [];
     let resolvedMallId = null;
 
-    if (targetMallId && mongoose.Types.ObjectId.isValid(targetMallId)) {
-      let singleMall = await Shop.findById(targetMallId).lean();
+    if (targetMallId) {
+      let singleMall = await Mall.findByPk(targetMallId);
       if (!singleMall) {
-        // In case targetMallId is a store ID inside a mall
-        singleMall = await Shop.findOne({ "menuItems._id": targetMallId }).lean();
+        const singleStore = await Store.findByPk(targetMallId, { include: ["mall"] });
+        if (singleStore && singleStore.mall) {
+          singleMall = singleStore.mall;
+        }
       }
       if (singleMall) {
         allMalls = [singleMall];
-        resolvedMallId = singleMall._id.toString();
+        resolvedMallId = singleMall.id;
       }
     }
 
-    // Default to the first mall if no specific ID provided (never expose all 16 malls across the system)
+    // Default to the first mall if no specific ID provided
     if (allMalls.length === 0) {
-      const defaultMall = await Shop.findOne().lean();
+      const defaultMall = await Mall.findOne();
       if (defaultMall) {
         allMalls = [defaultMall];
-        resolvedMallId = defaultMall._id.toString();
+        resolvedMallId = defaultMall.id;
       }
     }
 
