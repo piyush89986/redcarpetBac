@@ -1,6 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const bodyParser = require("body-parser");
+const prisma = require("./prisma/client");
 const { sequelize, User: ShopUser, QueueToken: User, Mall: Shop, Countdown } = require("./models/pg");
 const dataRoutes = require("./routes/dataRoutes");
 const twilio = require("twilio");
@@ -13,6 +14,7 @@ const forgotPasswordRoutes = require("./routes/forgotPasswordRoutes"); // Ensure
 const utilityRoutes = require("./routes/utilityRoute"); // Ensure path is correct
 const qrRoutes = require("./routes/qrRoutes");
 const analyticsRoutes = require("./routes/analyticsRoutes");
+const planRoutes = require("./routes/planRoutes");
 const rateLimit = require("express-rate-limit");
 
 const bcrypt = require("bcryptjs");
@@ -156,6 +158,7 @@ app.use(express.urlencoded({ extended: true }));
 // Apply rate limiting
 app.use("/api", globalLimiter);
 app.use("/api/auth", authLimiter, authRoutes);
+app.use("/api/plans", planRoutes);
 app.use("/api", menuRoutes);
 app.use("/api", forgotPasswordRoutes);
 
@@ -163,17 +166,11 @@ app.use("/api", forgotPasswordRoutes);
 app.use("/api", utilityRoutes);
 
 
-// Database Connection (PostgreSQL)
-sequelize
-  .authenticate()
-  .then(() => {
-    console.log("PostgreSQL Connected Successfully via Sequelize");
-    return sequelize.sync({ alter: false });
-  })
-  .then(() => console.log("PostgreSQL Tables Synchronized"))
-  .catch((err) => {
-    console.error("PostgreSQL Connection Warning / Waiting for DB setup:", err.message);
-  });
+// Database Connection (PostgreSQL with Prisma & Sequelize)
+prisma
+  .$connect()
+  .then(() => console.log("PostgreSQL Connected Successfully via Prisma ORM"))
+  .catch((err) => console.error("Prisma Connection Warning:", err.message));
 
 const server = http.createServer(app);
 const io = socketIo(server, {

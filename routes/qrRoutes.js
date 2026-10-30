@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const { QrConfig, Mall, Store } = require("../models/pg");
+const prisma = require("../prisma/client");
 
 const FRONTEND_BASE_URL =
   process.env.FRONTEND_URL ||
@@ -22,10 +22,10 @@ const sanitizeQrUrl = (url, shopId) => {
 router.get("/qrcode/:shopId", async (req, res) => {
   try {
     const { shopId } = req.params;
-    let config = await QrConfig.findOne({ where: { shopId } });
+    let config = await prisma.qrConfig.findUnique({ where: { shopId } });
 
     if (!config && shopId) {
-      const mall = await Mall.findByPk(shopId);
+      const mall = await prisma.mall.findUnique({ where: { id: shopId } });
       if (mall && mall.qrCodeUrl) {
         config = {
           shopId,
@@ -33,7 +33,7 @@ router.get("/qrcode/:shopId", async (req, res) => {
           size: mall.qrCodeSize || 240,
         };
       } else {
-        const store = await Store.findByPk(shopId);
+        const store = await prisma.store.findUnique({ where: { id: shopId } });
         if (store && store.qrCodeUrl) {
           config = {
             shopId,
@@ -84,35 +84,35 @@ const saveQrHandler = async (req, res) => {
 
     const qrSize = Number(size) || 240;
 
-    // 1. Save or update in QrConfig
-    let existingConfig = await QrConfig.findOne({ where: { shopId } });
-    let updatedConfig;
-    if (existingConfig) {
-      existingConfig.qrUrl = qrUrl.trim();
-      existingConfig.size = qrSize;
-      await existingConfig.save();
-      updatedConfig = existingConfig;
-    } else {
-      updatedConfig = await QrConfig.create({
+    // 1. Upsert QrConfig with Prisma
+    const updatedConfig = await prisma.qrConfig.upsert({
+      where: { shopId },
+      update: {
+        qrUrl: qrUrl.trim(),
+        size: qrSize,
+      },
+      create: {
         shopId,
         qrUrl: qrUrl.trim(),
         size: qrSize,
-      });
-    }
+      },
+    });
 
     // 2. Sync to Mall or Store table
     if (shopId) {
-      const mall = await Mall.findByPk(shopId);
+      const mall = await prisma.mall.findUnique({ where: { id: shopId } });
       if (mall) {
-        mall.qrCodeUrl = qrUrl.trim();
-        mall.qrCodeSize = qrSize;
-        await mall.save();
+        await prisma.mall.update({
+          where: { id: shopId },
+          data: { qrCodeUrl: qrUrl.trim(), qrCodeSize: qrSize },
+        });
       } else {
-        const store = await Store.findByPk(shopId);
+        const store = await prisma.store.findUnique({ where: { id: shopId } });
         if (store) {
-          store.qrCodeUrl = qrUrl.trim();
-          store.qrCodeSize = qrSize;
-          await store.save();
+          await prisma.store.update({
+            where: { id: shopId },
+            data: { qrCodeUrl: qrUrl.trim(), qrCodeSize: qrSize },
+          });
         }
       }
     }

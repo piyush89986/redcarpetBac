@@ -6,15 +6,93 @@ Welcome to the RedCarpet Backend API reference. This document provides complete 
 
 ## 🏛️ Architecture & Role System
 
-RedCarpet uses a streamlined **2-role access control model**:
+RedCarpet uses a role-based access model:
 
 | Role | Name | Responsibilities | Default Landing Route |
 | :--- | :--- | :--- | :--- |
+| **`superadmin`** | **Platform Super Administrator** | Controls global subscription plans, creates pricing tiers, sets store quotas, and oversees all mall venues. | Global Management API |
 | **`admin`** | **Business / Mall Administrator** | Manages retail brand stores, food court counters, TV displays, printable QR standees, and footfall analytics for their complex. | `/branddashboard2/:mallId` |
 | **`shop`** (or `shop admin`) | **Store Queue Counter Operator** | Calls customer tokens in real time (`#Next`), triggers automated SMS alerts, marks orders served/cancelled, and syncs live queue status to TV displays. | `/:shopId/counter` |
 
-> [!NOTE]
-> The platform no longer exposes a manual SuperAdmin registration UI. All shopping malls, business complexes, and venues are onboarded programmatically via external billing/CRM systems using the **Business Onboarding API** below.
+---
+
+## 💎 SuperAdmin Subscription Plans API
+
+SuperAdmins can configure subscription plans, pricing tiers, store quotas, and assign/upgrade malls to specific plans.
+
+### 1. List All Plans
+* **Endpoint:** `GET /api/plans`
+* **Access:** Public / Authenticated
+* **Response:**
+```json
+{
+  "success": true,
+  "count": 3,
+  "plans": [
+    {
+      "id": "e30e1234-...",
+      "name": "Starter Mall",
+      "tier": "starter",
+      "price": 4999,
+      "currency": "INR",
+      "billingCycle": "monthly",
+      "maxStores": 10,
+      "features": ["Unlimited VIP Passes", "Digital TV Signage", "Real-time Standee QR"],
+      "isActive": true,
+      "_count": { "malls": 1 }
+    }
+  ]
+}
+```
+
+### 2. Get Single Plan Details
+* **Endpoint:** `GET /api/plans/:id` *(or by tier e.g. `/api/plans/starter`)*
+* **Access:** Public / Authenticated
+
+### 3. Create a New Plan
+* **Endpoint:** `POST /api/plans`
+* **Access:** **SuperAdmin Only** (`Authorization: Bearer <superadmin_jwt>`)
+* **Request Body:**
+```json
+{
+  "name": "Ultra Arcade Tier",
+  "tier": "ultra",
+  "description": "For high volume retail gaming & entertainment centers",
+  "price": 14999,
+  "currency": "INR",
+  "billingCycle": "monthly",
+  "maxStores": 50,
+  "features": [
+    "Unlimited VIP passes",
+    "Multi-screen TV announcement sync",
+    "Priority Twilio SMS gateway",
+    "Dedicated concierge support"
+  ],
+  "isActive": true
+}
+```
+
+### 4. Update an Existing Plan
+* **Endpoint:** `PUT /api/plans/:id`
+* **Access:** **SuperAdmin Only** (`Authorization: Bearer <superadmin_jwt>`)
+* **Request Body:** Any partial fields from the create payload (`price`, `maxStores`, `name`, `features`, `isActive`).
+
+### 5. Delete a Plan
+* **Endpoint:** `DELETE /api/plans/:id`
+* **Access:** **SuperAdmin Only** (`Authorization: Bearer <superadmin_jwt>`)
+* **Note:** Deletion is blocked if active malls are currently assigned to the plan.
+
+### 6. Assign / Upgrade Mall Plan
+* **Endpoint:** `POST /api/plans/assign`
+* **Access:** **SuperAdmin Only** (`Authorization: Bearer <superadmin_jwt>`)
+* **Request Body:**
+```json
+{
+  "mallId": "e82ed8c6-001e-4b64-8bfd-ac7f0bce1ffb",
+  "tier": "enterprise",
+  "expiresAt": "2027-12-31T23:59:59.000Z"
+}
+```
 
 ---
 

@@ -1,0 +1,189 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(uuid())
+  name      String   @default("User")
+  email     String   @unique(map: "users_email")
+  password  String
+  role      String   @default("admin")
+  shopId    String?
+  mallId    String?
+  phone     String   @default("")
+  avatar    String   @default("")
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([mallId], map: "users_mall_id")
+  @@index([role], map: "users_role")
+  @@index([shopId], map: "users_shop_id")
+  @@map("users")
+}
+
+model Mall {
+  id                 String   @id @default(uuid())
+  title              String
+  description        String   @default("")
+  image              String   @default("")
+  email              String   @unique
+  password           String
+  role               String   @default("admin")
+  mallconpassword    String   @default("")
+  city               String   @default("")
+  address            String   @default("")
+  contactPhone       String   @default("")
+  qrCodeUrl          String   @default("")
+  qrCodeSize         Int      @default(240)
+  plan               Json?    @default("{\"name\": \"Standard Plan\", \"tier\": \"starter\", \"status\": \"active\", \"expiresAt\": null, \"maxStores\": 25}")
+  planId             String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  subscriptionStatus String   @default("active")
+  menuItems          Store[]
+  planRef            Plan?    @relation(fields: [planId], references: [id])
+
+  @@index([subscriptionStatus])
+  @@index([planId])
+  @@map("malls")
+}
+
+model Store {
+  id                 String   @id @default(uuid())
+  mallId             String
+  name               String   @default("Store")
+  category           String   @default("Retail Store")
+  image              String   @default("")
+  description        String   @default("")
+  link               String   @default("")
+  email              String?
+  password           String?
+  role               String   @default("shop admin")
+  shopconpassword    String   @default("")
+  conciergeFee       Float    @default(120)
+  qrCodeUrl          String   @default("")
+  qrCodeSize         Int      @default(240)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  subscriptionStatus String   @default("active")
+  mall               Mall     @relation(fields: [mallId], references: [id], onDelete: Cascade)
+
+  @@index([email], map: "stores_email")
+  @@index([mallId], map: "stores_mall_id")
+  @@map("stores")
+}
+
+model QueueToken {
+  id                     String    @id @default(uuid())
+  token                  String
+  name                   String
+  mobile                 String
+  email                  String    @default("")
+  shopid                 String
+  mallId                 String    @default("")
+  calledAt               DateTime?
+  servedAt               DateTime?
+  serviceDurationSeconds Int       @default(180)
+  clicked                Boolean   @default(false)
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+  status                 String    @default("waiting")
+
+  @@index([shopid, status])
+  @@index([mallId], map: "queuetokens_mall_id")
+  @@index([mobile], map: "queuetokens_mobile")
+  @@index([shopid, createdAt], map: "queuetokens_shopid_created_at")
+  @@map("queuetokens")
+}
+
+model QrConfig {
+  id        String   @id @default(uuid())
+  shopId    String   @unique
+  qrUrl     String
+  size      Int      @default(240)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("qr_configs")
+}
+
+model QrScanLog {
+  id        String   @id @default(uuid())
+  shopId    String
+  mallId    String   @default("")
+  shopName  String   @default("General Location")
+  mallName  String   @default("Red Carpet Complex")
+  isStore   Boolean  @default(false)
+  ip        String   @default("")
+  userAgent String   @default("")
+  scannedAt DateTime @default(now())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  scanType  String   @default("qr_scan")
+
+  @@index([mallId, scannedAt], map: "qr_scan_logs_mall_id_scanned_at")
+  @@index([scannedAt], map: "qr_scan_logs_scanned_at")
+  @@index([shopId, scannedAt], map: "qr_scan_logs_shop_id_scanned_at")
+  @@map("qr_scan_logs")
+}
+
+model TvDisplay {
+  id              String   @id @default(uuid())
+  displayid       String   @unique(map: "tvdisplays_displayid")
+  storeId         String   @default("")
+  mallId          String   @default("")
+  headline        String   @default("NOW SERVING GUESTS")
+  subText         String   @default("Please approach your designated billing counter")
+  royalPassText   String   @default("Red Carpet VIP Experience")
+  backgroundImage String   @default("")
+  phoenixText     String   @default("")
+  pText           String   @default("")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("tvdisplays")
+}
+
+model Countdown {
+  id        String   @id @default(uuid())
+  startTime BigInt
+  duration  Int      @default(180)
+  shopId    String   @default("")
+  token     String   @default("")
+  name      String   @default("Valued Guest")
+  storeName String   @default("")
+  mallTitle String   @default("")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([shopId])
+  @@index([createdAt])
+  @@map("countdowns")
+}
+
+// 9. Plan Model (SuperAdmin Tier Management)
+model Plan {
+  id             String   @id @default(uuid())
+  name           String   // e.g. "Starter", "Professional", "Enterprise"
+  tier           String   @unique // e.g. "starter", "pro", "enterprise"
+  description    String   @default("")
+  price          Float    @default(0) // Monthly price in USD or INR
+  currency       String   @default("INR")
+  billingCycle   String   @default("monthly") // monthly, quarterly, yearly
+  maxStores      Int      @default(10) // Max counters allowed per mall
+  features       Json?    @default("[\"Unlimited Queuing\", \"TV Display Integration\", \"Standard Analytics\"]")
+  isActive       Boolean  @default(true)
+  isCustom       Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  malls          Mall[]
+
+  @@map("plans")
+}

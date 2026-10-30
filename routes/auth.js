@@ -1,8 +1,7 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const { Op } = require("sequelize");
-const { User, Mall, Store } = require("../models/pg");
+const prisma = require("../prisma/client");
 
 const router = express.Router();
 
@@ -15,17 +14,19 @@ router.post("/signup", async (req, res) => {
     }
 
     const cleanEmail = email.trim().toLowerCase();
-    const existing = await User.findOne({ where: { email: cleanEmail } });
+    const existing = await prisma.user.findUnique({ where: { email: cleanEmail } });
     if (existing) {
       return res.status(400).json({ error: "Email already exists" });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    const newUser = await User.create({
-      name: name || "User",
-      email: cleanEmail,
-      password: hashedPassword,
-      role: role || "admin",
+    const newUser = await prisma.user.create({
+      data: {
+        name: name || "User",
+        email: cleanEmail,
+        password: hashedPassword,
+        role: role || "admin",
+      },
     });
 
     res.json({ message: "User registered successfully", user: { id: newUser.id, email: newUser.email } });
@@ -47,9 +48,9 @@ router.post("/login", async (req, res) => {
     const cleanEmail = email.trim().toLowerCase();
 
     // Look up across User, Mall, or Store
-    let user = await User.findOne({ where: { email: cleanEmail } });
-    let mall = await Mall.findOne({ where: { email: cleanEmail } });
-    let storeItem = await Store.findOne({ where: { email: cleanEmail } });
+    let user = await prisma.user.findUnique({ where: { email: cleanEmail } });
+    let mall = await prisma.mall.findUnique({ where: { email: cleanEmail } });
+    let storeItem = await prisma.store.findFirst({ where: { email: cleanEmail } });
 
     if (!user && !mall && !storeItem) {
       return res.status(400).json({ error: "User not found" });
@@ -93,17 +94,21 @@ router.post("/login", async (req, res) => {
     if (effectiveHashedPassword) {
       if (user) {
         if (user.password !== effectiveHashedPassword) {
-          user.password = effectiveHashedPassword;
-          await user.save();
+          await prisma.user.update({
+            where: { id: user.id },
+            data: { password: effectiveHashedPassword },
+          });
         }
       } else {
-        user = await User.create({
-          name: mall?.title || storeItem?.name || "User",
-          email: cleanEmail,
-          password: effectiveHashedPassword,
-          role: mall ? "admin" : storeItem ? "shop admin" : "admin",
-          shopId: storeItem ? storeItem.id : mall ? mall.id : null,
-          mallId: storeItem ? storeItem.mallId : mall ? mall.id : null,
+        user = await prisma.user.create({
+          data: {
+            name: mall?.title || storeItem?.name || "User",
+            email: cleanEmail,
+            password: effectiveHashedPassword,
+            role: mall ? "admin" : storeItem ? "shop admin" : "admin",
+            shopId: storeItem ? storeItem.id : mall ? mall.id : null,
+            mallId: storeItem ? storeItem.mallId : mall ? mall.id : null,
+          },
         });
       }
     }
