@@ -1,51 +1,87 @@
 const express = require("express");
 const router = express.Router();
-const { Mall: Shop, Store } = require("../models/pg");
+const prisma = require("../prisma/client");
 
-// ✅ Fetch all shops
+// Helper to format mall object for frontend compatibility (_id, menuItems)
+const formatMall = (mall) => {
+  if (!mall) return null;
+  return {
+    _id: mall.id,
+    id: mall.id,
+    title: mall.title,
+    description: mall.description,
+    image: mall.image,
+    email: mall.email,
+    role: mall.role,
+    city: mall.city,
+    address: mall.address,
+    contactPhone: mall.contactPhone,
+    subscriptionStatus: mall.subscriptionStatus,
+    qrCodeUrl: mall.qrCodeUrl,
+    qrCodeSize: mall.qrCodeSize,
+    plan: mall.plan,
+    menuItems: (mall.menuItems || []).map((store) => ({
+      _id: store.id,
+      id: store.id,
+      name: store.name,
+      category: store.category,
+      image: store.image,
+      description: store.description,
+      link: store.link,
+      email: store.email,
+      role: store.role,
+      conciergeFee: store.conciergeFee,
+      qrCodeUrl: store.qrCodeUrl,
+      qrCodeSize: store.qrCodeSize,
+      subscriptionStatus: store.subscriptionStatus,
+    })),
+  };
+};
+
+// Fetch all shops/malls
 router.get("/api/shops", async (req, res) => {
   try {
-    const shops = await Shop.find();
-    res.json(shops);
+    const malls = await prisma.mall.findMany({
+      include: { menuItems: true },
+    });
+    res.json(malls.map(formatMall));
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 });
 
-// // ✅ Add new shop item
-// router.post("/shops", async (req, res) => {
-//   const { title, description, image} = req.body;
-
-//   const shop = new Shop({
-//     title,
-//     description,
-//     image,
-//     menuItems: [],
-//   });
-
-//   try {
-//     const newShop = await shop.save();
-//     res.status(201).json(newShop);
-//   } catch (err) {
-//     res.status(400).json({ message: err.message });
-//   }
-// });
-
-// ✅ Add Menu Item to a Shop
+// Add Menu Item / Store to a Mall
 router.post("/api/shops/:id/menu", async (req, res) => {
   try {
-    const shop = await Shop.findById(req.params.id);
-    if (!shop) return res.status(404).json({ message: "Shop not found" });
+    const { id } = req.params;
+    const mall = await prisma.mall.findUnique({ where: { id } });
+    if (!mall) return res.status(404).json({ message: "Mall not found" });
 
-    // Fix: Ensure menuItems exists
-    if (!shop.menuItems) {
-      shop.menuItems = [];
-    }
+    const newStore = await prisma.store.create({
+      data: {
+        mallId: id,
+        name: req.body.name || "Store",
+        category: req.body.category || "Retail Store",
+        image: req.body.image || "",
+        description: req.body.description || "",
+        link: req.body.link || "",
+        email: req.body.email || null,
+        password: req.body.password || null,
+        role: req.body.role || "shop admin",
+        shopconpassword: req.body.shopconpassword || "",
+        conciergeFee: Number(req.body.conciergeFee) || 120,
+        qrCodeUrl: req.body.qrCodeUrl || "",
+        qrCodeSize: Number(req.body.qrCodeSize) || 240,
+        subscriptionStatus: req.body.subscriptionStatus || "active",
+      },
+    });
 
-    shop.menuItems.push(req.body);
-    await shop.save();
+    const updatedMall = await prisma.mall.findUnique({
+      where: { id },
+      include: { menuItems: true },
+    });
 
-    res.json({ message: "Menu item added successfully!", shop });
+    res.json({ message: "Store added successfully!", store: newStore, shop: formatMall(updatedMall) });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -54,80 +90,102 @@ router.post("/api/shops/:id/menu", async (req, res) => {
 // Get Menu Items of a Shop
 router.get("/api/shops/:id/menu", async (req, res) => {
   try {
-    const shop = await Shop.findById(req.params.id);
-    if (!shop) return res.status(404).json({ message: "Shop not found" });
-
-    res.json(shop.menuItems);
+    const { id } = req.params;
+    const stores = await prisma.store.findMany({
+      where: { mallId: id },
+    });
+    res.json(stores.map((s) => ({ _id: s.id, ...s })));
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 });
 
-// ✅ Fetch a single shop or store item along with details
+// Fetch a single shop or store item along with details
 router.get("/api/shops/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    let shop = null;
 
-    if (id) {
-      shop = await Shop.findById(id);
+    // 1. Try finding as a Mall
+    const mall = await prisma.mall.findUnique({
+      where: { id },
+      include: { menuItems: true },
+    });
 
-      // If not a top-level mall, check if it's a specific store inside a mall
-      if (!shop) {
-        const parentMall = await Shop.findOne({ "menuItems._id": id });
-        if (parentMall) {
-          const item = parentMall.menuItems.id(id);
-          if (item) {
-            shop = {
-              _id: item._id,
-              title: item.name,
-              name: item.name,
-              description: item.description,
-              image: item.image,
-              email: item.email,
-              role: item.role,
-              mallTitle: parentMall.title,
-              mallId: parentMall._id,
-              menuItems: [item],
-            };
-          }
-        }
-      }
+    if (mall) {
+      return res.json(formatMall(mall));
     }
 
-    if (!shop) return res.status(404).json({ message: "Shop not found" });
+    // 2. Try finding as an individual Store inside a Mall
+    const store = await prisma.store.findUnique({
+      where: { id },
+      include: { mall: true },
+    });
 
-    res.json(shop);
+    if (store) {
+      const formattedStore = {
+        _id: store.id,
+        id: store.id,
+        title: store.name,
+        name: store.name,
+        category: store.category,
+        description: store.description,
+        image: store.image || store.mall?.image,
+        email: store.email,
+        role: store.role,
+        mallTitle: store.mall?.title,
+        mallId: store.mallId,
+        menuItems: [
+          {
+            _id: store.id,
+            id: store.id,
+            name: store.name,
+            description: store.description,
+            image: store.image,
+            email: store.email,
+            role: store.role,
+          },
+        ],
+      };
+      return res.json(formattedStore);
+    }
+
+    res.status(404).json({ message: "Shop or Store not found" });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 });
 
-
-// Update Menu Item
+// Update Menu Item / Store
 router.put("/api/update-menu-item/:shopId/:menuItemName", async (req, res) => {
   try {
     const { shopId, menuItemName } = req.params;
     const { newName, newLink, newDescription, newEmail, newPassword, newShopConPassword, newRole } = req.body;
 
-    const shop = await Shop.findById(shopId);
-    if (!shop) return res.status(404).json({ message: "Shop item not found" });
+    const store = await prisma.store.findFirst({
+      where: {
+        mallId: shopId,
+        name: menuItemName,
+      },
+    });
 
-    // Update the menu item
-    const menuItem = shop.menuItems.find((item) => item.name === menuItemName);
-    if (!menuItem) return res.status(404).json({ message: "Menu item not found" });
+    if (!store) {
+      return res.status(404).json({ message: "Store not found" });
+    }
 
-    menuItem.name = newName;
-    menuItem.link = newLink;
-    menuItem.description = newDescription;
-    menuItem.email = newEmail;
-    menuItem.password = newPassword;
-    menuItem.shopconpassword = newShopConPassword;
-    menuItem.role = newRole;
+    const updatedStore = await prisma.store.update({
+      where: { id: store.id },
+      data: {
+        ...(newName && { name: newName }),
+        ...(newLink && { link: newLink }),
+        ...(newDescription && { description: newDescription }),
+        ...(newEmail && { email: newEmail }),
+        ...(newPassword && { password: newPassword }),
+        ...(newShopConPassword && { shopconpassword: newShopConPassword }),
+        ...(newRole && { role: newRole }),
+      },
+    });
 
-
-    await shop.save(); // Save to MongoDB
-    res.json({ success: true, message: "Menu item updated", shop });
+    res.json({ success: true, message: "Store updated", store: updatedStore });
   } catch (err) {
     res.status(500).json({ message: "Server error", error: err.message });
   }

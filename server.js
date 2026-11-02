@@ -2,7 +2,6 @@ const express = require("express");
 const cors = require("cors");
 const bodyParser = require("body-parser");
 const prisma = require("./prisma/client");
-const { sequelize, User: ShopUser, QueueToken: User, Mall: Shop, Countdown } = require("./models/pg");
 const dataRoutes = require("./routes/dataRoutes");
 const twilio = require("twilio");
 const http = require("http");
@@ -210,21 +209,24 @@ app.post("/api/information", async (req, res) => {
   try {
     // 12-hour refreshed token logic per shop
     const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000);
-    const count = await User.countDocuments({
-      shopid: shopid,
-      createdAt: { $gte: twelveHoursAgo },
+    const count = await prisma.queueToken.count({
+      where: {
+        shopid: String(shopid),
+        createdAt: { gte: twelveHoursAgo },
+      },
     });
     // Starts at 101, resets every 12 hours
     const assignedToken = String(100 + count + 1);
 
-    const newInfo = new User({
-      name,
-      mobile,
-      email,
-      token: assignedToken,
-      shopid,
+    const newInfo = await prisma.queueToken.create({
+      data: {
+        name: String(name || "Customer"),
+        mobile: String(mobile || ""),
+        email: String(email || ""),
+        token: assignedToken,
+        shopid: String(shopid),
+      },
     });
-    await newInfo.save();
     console.log("Data saved successfully with 12h-refreshed token:", assignedToken);
     res.status(201).json({
       message: "Data saved successfully!",
@@ -233,31 +235,32 @@ app.post("/api/information", async (req, res) => {
     });
   } catch (err) {
     console.log("Error saving data:", err);
-    res.status(500).json({ message: "Error saving data", error: err });
+    res.status(500).json({ message: "Error saving data", error: err.message });
   }
 });
 
 // Start Countdown & Broadcast Token Call to Live TV Screens
 app.post("/api/start-countdown", async (req, res) => {
   const { duration, phoneNumber, shopId, token, name, storeName, mallTitle } = req.body;
-  const startTime = Date.now();
+  const startTime = BigInt(Date.now());
   const safeDuration = Number(duration) || 180;
 
   try {
-    const newCountdown = new Countdown({
-      startTime,
-      duration: safeDuration,
-      shopId: String(shopId || ""),
-      token: String(token || ""),
-      name: name || "Valued Guest",
-      storeName: storeName || "",
-      mallTitle: mallTitle || "",
+    const newCountdown = await prisma.countdown.create({
+      data: {
+        startTime,
+        duration: safeDuration,
+        shopId: String(shopId || ""),
+        token: String(token || ""),
+        name: name || "Valued Guest",
+        storeName: storeName || "",
+        mallTitle: mallTitle || "",
+      },
     });
-    await newCountdown.save();
 
     // Broadcast real-time event to all connected TV screens and customer web pages
     io.emit("countdown-start", {
-      startTime,
+      startTime: Number(startTime),
       duration: safeDuration,
       shopId: String(shopId || ""),
       token: String(token || ""),
@@ -292,7 +295,7 @@ app.post("/api/start-countdown", async (req, res) => {
     res.json({
       success: true,
       message: "Countdown started and broadcasted to TV",
-      startTime,
+      startTime: Number(startTime),
       duration: safeDuration,
       token,
       name,
@@ -308,19 +311,24 @@ app.post("/api/start-countdown", async (req, res) => {
 app.get(["/api/get-countdown", "/api/get-countdown/:id"], async (req, res) => {
   try {
     const targetShopId = req.params.id || req.query.shopId;
-    const query = targetShopId ? { shopId: String(targetShopId) } : {};
-    const countdown = await Countdown.findOne(query).sort({ startTime: -1 }).lean();
+    const where = targetShopId ? { shopId: String(targetShopId) } : {};
+    const countdown = await prisma.countdown.findFirst({
+      where,
+      orderBy: { startTime: "desc" },
+    });
 
     if (!countdown) {
       return res.json({ active: false });
     }
 
-    const elapsed = Math.floor((Date.now() - countdown.startTime) / 1000);
+    const startTimeNum = Number(countdown.startTime);
+    const elapsed = Math.floor((Date.now() - startTimeNum) / 1000);
     const duration = countdown.duration || 180;
     const active = elapsed < duration;
 
     res.json({
       ...countdown,
+      startTime: startTimeNum,
       active,
       remaining: Math.max(0, duration - elapsed),
     });
@@ -430,7 +438,7 @@ app.post("/api/verify-otp", otpVerifyLimiter, async (req, res) => {
 
   if (parseInt(otp) === parseInt(storedOtp)) {
     try {
-      const user = await User.findOne({ mobile });
+      const user = await prisma.queueToken.findFirst({ where: { mobile: String(mobile) } });
       delete otpStore[cleanMobile];
       delete otpStore[mobile];
       return res.json({ success: true, message: "OTP verified successfully" });
@@ -469,10 +477,13 @@ app.post("/api/verify-otp", otpVerifyLimiter, async (req, res) => {
 app.get("/api/get-token", async (req, res) => {
   try {
     const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000);
-    const latestUser = await User.findOne({
-      mobile: req.query.phone,
-      createdAt: { $gte: twelveHoursAgo },
-    }).sort({ createdAt: -1 });
+    const latestUser = await prisma.queueToken.findFirst({
+      where: {
+        mobile: String(req.query.phone || ""),
+        createdAt: { gte: twelveHoursAgo },
+      },
+      orderBy: { createdAt: "desc" },
+    });
 
     if (!latestUser) {
       return res.status(404).json({ message: "No active token found in last 12 hours" });
@@ -480,7 +491,7 @@ app.get("/api/get-token", async (req, res) => {
     res.json({ token: latestUser.token });
   } catch (error) {
     console.error("Error fetching token:", error);
-    res.status(500).json({ message: "Error fetching token", error });
+    res.status(500).json({ message: "Error fetching token", error: error.message });
   }
 });
 
@@ -562,55 +573,7 @@ app.post("/api/send-message", async (req, res) => {
 //   }
 // });
 
-// GET API
-app.get("/api/shops", async (req, res) => {
-  try {
-    const shops = await Shop.find({ title: { $exists: true, $ne: "" } });
-    res.json(shops);
-  } catch (err) {
-    res.status(500).json({ message: "Error fetching shops", error: err.message });
-  }
-});
-
-app.get("/api/menus/:id", async (req, res) => {
-  try {
-    const menuItems = await Menu.find({ shopId: req.params.id });
-    res.json(menuItems);
-  } catch (error) {
-    res.status(500).json({ message: "Error fetching menu" });
-  }
-});
-
-app.put("/api/shops/:id", async (req, res) => {
-  const { id } = req.params;
-  const updatedData = req.body;
-  const hassPas = await bcrypt.hash(req.body.password, 10);
-  try {
-    const updatedShop = await Shop.findByIdAndUpdate(
-      id,
-      { ...updatedData, password: hassPas },
-      {
-        new: true,
-      }
-    );
-    if (!updatedShop) {
-      return res.status(404).json({ message: "Shop not found" });
-    }
-    res.json(updatedShop);
-  } catch (error) {
-    res.status(500).json({ message: "Server error", error });
-  }
-});
-
-app.get("/api/shops/:id", async (req, res) => {
-  try {
-    const shop = await Shop.findById(req.params.id);
-    if (!shop) return res.status(404).json({ message: "Shop not found" });
-    res.json(shop);
-  } catch (error) {
-    res.status(500).json({ message: "Error fetching shop", error });
-  }
-});
+// (Shop endpoints handled by shopRoutes)
 
 // Toggle / Update Mall & Store Subscription Status
 const handleSubscriptionToggle = async (req, res) => {
@@ -625,35 +588,34 @@ const handleSubscriptionToggle = async (req, res) => {
   }
 
   try {
-    // 1. Try finding and updating top-level Mall / Shop
-    if (id) {
-      let shop = await Shop.findById(id);
-      if (shop) {
-        shop.subscriptionStatus = subscriptionStatus;
-        await shop.save();
-        return res.status(200).json({
-          success: true,
-          message: `Subscription successfully updated to ${subscriptionStatus}`,
-          subscriptionStatus,
-          shop,
-        });
-      }
+    // 1. Try finding and updating Mall
+    const mall = await prisma.mall.findUnique({ where: { id } });
+    if (mall) {
+      const updatedMall = await prisma.mall.update({
+        where: { id },
+        data: { subscriptionStatus },
+      });
+      return res.status(200).json({
+        success: true,
+        message: `Subscription successfully updated to ${subscriptionStatus}`,
+        subscriptionStatus,
+        shop: updatedMall,
+      });
     }
 
-    // 2. Try finding as a child store inside menuItems
-    const parentMall = await Shop.findOne({ "menuItems._id": id });
-    if (parentMall) {
-      const item = parentMall.menuItems.id(id);
-      if (item) {
-        item.subscriptionStatus = subscriptionStatus;
-        await parentMall.save();
-        return res.status(200).json({
-          success: true,
-          message: `Store subscription successfully updated to ${subscriptionStatus}`,
-          subscriptionStatus,
-          shop: item,
-        });
-      }
+    // 2. Try finding and updating Store
+    const store = await prisma.store.findUnique({ where: { id } });
+    if (store) {
+      const updatedStore = await prisma.store.update({
+        where: { id },
+        data: { subscriptionStatus },
+      });
+      return res.status(200).json({
+        success: true,
+        message: `Store subscription successfully updated to ${subscriptionStatus}`,
+        subscriptionStatus,
+        shop: updatedStore,
+      });
     }
 
     return res.status(404).json({
@@ -674,7 +636,7 @@ app.patch("/api/shops/:id/subscription", handleSubscriptionToggle);
 app.put("/api/shops/:id/subscription", handleSubscriptionToggle);
 app.post("/api/shops/:id/subscription", handleSubscriptionToggle);
 
-// ye hai edit or save karne ke liye(fruits names, example)
+// Update Store / Counter inside a Mall
 app.put("/api/shops/update-menu-item/:id/:name", async (req, res) => {
   const { id, name } = req.params;
   const {
@@ -688,78 +650,65 @@ app.put("/api/shops/update-menu-item/:id/:name", async (req, res) => {
     newRole,
   } = req.body;
   try {
-    const shop = await Shop.findById(id);
-    if (!shop) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Shop not found" });
+    const store = await prisma.store.findFirst({
+      where: {
+        mallId: id,
+        name,
+      },
+    });
+
+    if (!store) {
+      return res.status(404).json({ success: false, message: "Store not found" });
     }
 
-    const itemIndex = shop.menuItems.findIndex((item) => item.name === name);
-    if (itemIndex === -1) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Menu item not found" });
-    }
-    // Update the item
-    shop.menuItems[itemIndex].name = newName;
-    shop.menuItems[itemIndex].image = newImage;
-    shop.menuItems[itemIndex].link = newLink;
-    shop.menuItems[itemIndex].description = newDescription;
-    shop.menuItems[itemIndex].email = newEmail;
-    shop.menuItems[itemIndex].shopconpassword = newShopConPassword;
-    shop.menuItems[itemIndex].role = newRole;
-
-    // ✅ Hash the new password only if provided
+    let hashedPassword = store.password;
     if (newPassword) {
-      const hashedPassword = await bcrypt.hash(newPassword, 10);
-      shop.menuItems[itemIndex].password = hashedPassword;
+      hashedPassword = await bcrypt.hash(newPassword, 10);
     }
 
-    // Save to database
-    await shop.save();
+    await prisma.store.update({
+      where: { id: store.id },
+      data: {
+        ...(newName && { name: newName }),
+        ...(newDescription !== undefined && { description: newDescription }),
+        ...(newLink !== undefined && { link: newLink }),
+        ...(newImage !== undefined && { image: newImage }),
+        ...(newEmail !== undefined && { email: newEmail }),
+        ...(newShopConPassword !== undefined && { shopconpassword: newShopConPassword }),
+        ...(newRole && { role: newRole }),
+        ...(newPassword && { password: hashedPassword }),
+      },
+    });
 
     res.json({ success: true, message: "Item updated successfully" });
   } catch (error) {
     console.error("Error updating item:", error);
-    res.status(500).json({ success: false, message: "Server error" });
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
   }
 });
 
-// ye hai menu ke jo items he vo delete karne ke liye(fruits names example)
+// Delete Store / Counter inside a Mall
 app.delete("/api/shops/delete-menu-item/:id/:name", async (req, res) => {
   const { id, name } = req.params;
 
   try {
-    const shop = await Shop.findById(id);
-    if (!shop) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Shop not found" });
+    const store = await prisma.store.findFirst({
+      where: {
+        mallId: id,
+        name,
+      },
+    });
+
+    if (!store) {
+      return res.status(404).json({ success: false, message: "Store not found" });
     }
 
-    // Filter out the menu item to be deleted
-    const updatedMenuItems = shop.menuItems.filter(
-      (item) => item.name !== name
-    );
-
-    // If no changes were made, return an error
-    if (updatedMenuItems.length === shop.menuItems.length) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Menu item not found" });
-    }
-
-    // Update the menuItems array
-    shop.menuItems = updatedMenuItems;
-
-    // Save the updated document
-    await shop.save();
+    await prisma.store.delete({ where: { id: store.id } });
 
     res.json({ success: true, message: "Item deleted successfully" });
   } catch (error) {
     console.error("Error deleting item:", error);
-    res.status(500).json({ success: false, message: "Server error" });
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
   }
 });
 
@@ -827,7 +776,7 @@ const handleBusinessOnboard = async (req, res) => {
     }
 
     // Check if business with this email already exists
-    const existingMall = await Shop.findOne({ email: cleanEmail });
+    const existingMall = await prisma.mall.findUnique({ where: { email: cleanEmail } });
     if (existingMall) {
       return res.status(409).json({
         success: false,
@@ -847,57 +796,62 @@ const handleBusinessOnboard = async (req, res) => {
       expiresAt: plan?.expiresAt ? new Date(plan.expiresAt) : null,
     };
 
-    const newShop = new Shop({
-      title: resolvedTitle,
-      email: cleanEmail,
-      password: hashedPassword,
-      role: "admin", // All onboarded businesses have role: 'admin'
-      mallconpassword: password,
-      city: city || "",
-      address: address || "",
-      contactPhone: contactPhone || "",
-      image:
-        image ||
-        "https://images.unsplash.com/photo-1519567241046-7f570eee3ce6?w=1200&q=80",
-      description:
-        description || "Shopping complex & retail entertainment center",
-      subscriptionStatus: subscriptionStatus || "active",
-      plan: resolvedPlan,
-      menuItems: [],
+    const newShop = await prisma.mall.create({
+      data: {
+        title: resolvedTitle,
+        email: cleanEmail,
+        password: hashedPassword,
+        role: "admin",
+        mallconpassword: password,
+        city: city || "",
+        address: address || "",
+        contactPhone: contactPhone || "",
+        image:
+          image ||
+          "https://images.unsplash.com/photo-1519567241046-7f570eee3ce6?w=1200&q=80",
+        description:
+          description || "Shopping complex & retail entertainment center",
+        subscriptionStatus: subscriptionStatus || "active",
+        plan: resolvedPlan,
+      },
     });
 
-    await newShop.save();
-
     // Upsert User login credentials
-    let user = await ShopUser.findOne({ email: cleanEmail });
-    if (user) {
-      user.name = resolvedTitle;
-      user.password = hashedPassword;
-      user.role = "admin";
-      user.shopId = String(newShop._id);
-      await user.save();
-    } else {
-      user = new ShopUser({
+    const user = await prisma.user.upsert({
+      where: { email: cleanEmail },
+      update: {
+        name: resolvedTitle,
+        password: hashedPassword,
+        role: "admin",
+        shopId: newShop.id,
+        mallId: newShop.id,
+      },
+      create: {
         name: resolvedTitle,
         email: cleanEmail,
         password: hashedPassword,
         role: "admin",
-        shopId: String(newShop._id),
-      });
-      await user.save();
-    }
+        shopId: newShop.id,
+        mallId: newShop.id,
+      },
+    });
 
     return res.status(201).json({
       success: true,
       message: "Business successfully onboarded!",
       business: {
-        id: String(newShop._id),
+        id: newShop.id,
         title: newShop.title,
         email: newShop.email,
         role: "admin",
         subscriptionStatus: newShop.subscriptionStatus,
         plan: newShop.plan,
-        dashboardUrl: `/branddashboard2/${newShop._id}`,
+        dashboardUrl: `/branddashboard2/${newShop.id}`,
+      },
+      user: {
+        id: user.id,
+        email: user.email,
+        role: user.role,
       },
     });
   } catch (error) {

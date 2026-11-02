@@ -1,8 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const { Mall, Store, QueueToken, QrScanLog } = require("../models/pg");
-const Shop = Mall;
-const PhoenixUser = QueueToken;
+const prisma = require("../prisma/client");
 
 /**
  * Helper: Resolve shop or mall details given an ID
@@ -18,7 +16,7 @@ async function resolveLocation(targetId) {
   }
 
   // 1. Is it a Mall?
-  const mall = await Mall.findByPk(targetId);
+  const mall = await prisma.mall.findUnique({ where: { id: String(targetId) } });
   if (mall) {
     return {
       shopName: mall.title || "Mall Complex",
@@ -29,7 +27,11 @@ async function resolveLocation(targetId) {
   }
 
   // 2. Is it a Store inside a Mall?
-  const store = await Store.findByPk(targetId, { include: ["mall"] });
+  const store = await prisma.store.findUnique({
+    where: { id: String(targetId) },
+    include: { mall: true },
+  });
+
   if (store) {
     return {
       shopName: store.name || "Store Counter",
@@ -66,25 +68,25 @@ router.post("/track-scan", async (req, res) => {
       "";
     const userAgent = req.headers["user-agent"] || "";
 
-    const scanLog = new QrScanLog({
-      shopId: String(shopId),
-      mallId: String(mallId || shopId),
-      shopName,
-      mallName,
-      isStore,
-      scanType: scanType || "qr_scan",
-      ip: clientIp,
-      userAgent,
-      scannedAt: new Date(),
+    const scanLog = await prisma.qrScanLog.create({
+      data: {
+        shopId: String(shopId),
+        mallId: String(mallId || shopId),
+        shopName,
+        mallName,
+        isStore,
+        scanType: scanType || "qr_scan",
+        ip: clientIp,
+        userAgent,
+        scannedAt: new Date(),
+      },
     });
-
-    await scanLog.save();
 
     return res.status(201).json({
       success: true,
       message: "QR scan logged successfully",
       data: {
-        id: scanLog._id,
+        id: scanLog.id,
         shopName,
         mallName,
         scannedAt: scanLog.scannedAt,
@@ -102,319 +104,74 @@ router.post("/track-scan", async (req, res) => {
 
 /**
  * GET /api/analytics/overview
- * Provides statistics:
- * - If mallId / shopId is provided: Returns metrics scoped specifically to that business & its counters.
- * - Otherwise: Returns platform overview.
+ * Provides platform and complex analytics
  */
 router.get("/overview", async (req, res) => {
   try {
     const { mallId, shopId } = req.query;
     const targetMallId = mallId || shopId;
 
-    // 1. Fetch mall scoped strictly to the manager's business
-    let allMalls = [];
-    let resolvedMallId = null;
-
+    let targetMall = null;
     if (targetMallId) {
-      let singleMall = await Mall.findByPk(targetMallId);
-      if (!singleMall) {
-        const singleStore = await Store.findByPk(targetMallId, { include: ["mall"] });
-        if (singleStore && singleStore.mall) {
-          singleMall = singleStore.mall;
-        }
-      }
-      if (singleMall) {
-        allMalls = [singleMall];
-        resolvedMallId = singleMall.id;
-      }
-    }
+      targetMall = await prisma.mall.findUnique({
+        where: { id: String(targetMallId) },
+        include: { menuItems: true },
+      });
 
-    // Default to the first mall if no specific ID provided
-    if (allMalls.length === 0) {
-      const defaultMall = await Mall.findOne();
-      if (defaultMall) {
-        allMalls = [defaultMall];
-        resolvedMallId = defaultMall.id;
-      }
-    }
-
-    // 2. Total entities for this specific business
-    const totalMalls = allMalls.length;
-    let totalStores = 0;
-    const storeMap = {};
-    const mallStoreIds = {};
-
-    allMalls.forEach((mall) => {
-      const mallIdStr = mall._id.toString();
-      mallStoreIds[mallIdStr] = [];
-      if (Array.isArray(mall.menuItems)) {
-        totalStores += mall.menuItems.length;
-        mall.menuItems.forEach((st) => {
-          const stIdStr = st._id.toString();
-          mallStoreIds[mallIdStr].push(stIdStr);
-          storeMap[stIdStr] = {
-            storeId: stIdStr,
-            name: st.name || "Counter",
-            image: st.image || "",
-            mallId: mallIdStr,
-            mallTitle: mall.title || "Mall",
-            subscriptionStatus: st.subscriptionStatus || "active",
-            qrCodeUrl: st.qrCodeUrl || "",
-          };
+      if (!targetMall) {
+        const store = await prisma.store.findUnique({
+          where: { id: String(targetMallId) },
+          include: { mall: { include: { menuItems: true } } },
         });
+        if (store?.mall) targetMall = store.mall;
       }
-    });
+    }
 
-    // 3. Time boundaries
-    const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const sevenDaysAgo = new Date(todayStart.getTime() - 6 * 24 * 60 * 60 * 1000);
-    const fourteenDaysAgo = new Date(todayStart.getTime() - 13 * 24 * 60 * 60 * 1000);
+    if (!targetMall) {
+      targetMall = await prisma.mall.findFirst({
+        include: { menuItems: true },
+      });
+    }
 
-    // Scoped query filters strictly for this mall and its counters
-    const scopedStoreIds = resolvedMallId && mallStoreIds[resolvedMallId] ? mallStoreIds[resolvedMallId] : [];
-    const allScopedIds = [resolvedMallId, ...scopedStoreIds].filter(Boolean).map(String);
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
 
-    const scanFilter = allScopedIds.length > 0
-      ? { $or: [{ mallId: { $in: allScopedIds } }, { shopId: { $in: allScopedIds } }] }
+    const scanWhere = targetMall ? { mallId: targetMall.id } : {};
+    const tokenWhere = targetMall
+      ? {
+          shopid: {
+            in: [targetMall.id, ...targetMall.menuItems.map((m) => m.id)],
+          },
+        }
       : {};
-    const todayScanFilter = { ...scanFilter, scannedAt: { $gte: todayStart } };
 
-    const tokenFilter = allScopedIds.length > 0
-      ? { $or: [{ shopid: { $in: allScopedIds } }, { mallId: { $in: allScopedIds } }] }
-      : {};
-    const todayTokenFilter = { ...tokenFilter, createdAt: { $gte: todayStart } };
-
-    // 4. Counts from DB
     const [
-      totalScansInDb,
-      todayScansInDb,
-      totalTokensInDb,
-      todayTokensInDb,
-      scansByShop,
-      scansByMall,
-      tokensByShop,
-      todayScansByShop,
-      todayTokensByShop,
+      totalScans,
+      todayScans,
+      totalTokens,
+      todayTokens,
       recentScans,
       recentTokens,
     ] = await Promise.all([
-      QrScanLog.countDocuments(scanFilter),
-      QrScanLog.countDocuments(todayScanFilter),
-      PhoenixUser.countDocuments(tokenFilter),
-      PhoenixUser.countDocuments(todayTokenFilter),
-      QrScanLog.aggregate([
-        ...(targetMallId ? [{ $match: scanFilter }] : []),
-        { $group: { _id: "$shopId", count: { $sum: 1 }, lastAt: { $max: "$scannedAt" } } },
-      ]),
-      QrScanLog.aggregate([
-        ...(targetMallId ? [{ $match: scanFilter }] : []),
-        { $group: { _id: "$mallId", count: { $sum: 1 } } },
-      ]),
-      PhoenixUser.aggregate([
-        ...(targetMallId ? [{ $match: tokenFilter }] : []),
-        { $group: { _id: "$shopid", count: { $sum: 1 }, lastAt: { $max: "$createdAt" } } },
-      ]),
-      QrScanLog.aggregate([
-        { $match: todayScanFilter },
-        { $group: { _id: "$shopId", count: { $sum: 1 } } },
-      ]),
-      PhoenixUser.aggregate([
-        { $match: todayTokenFilter },
-        { $group: { _id: "$shopid", count: { $sum: 1 } } },
-      ]),
-      QrScanLog.find(scanFilter).sort({ scannedAt: -1 }).limit(15).lean(),
-      PhoenixUser.find(tokenFilter).sort({ createdAt: -1 }).limit(15).lean(),
+      prisma.qrScanLog.count({ where: scanWhere }),
+      prisma.qrScanLog.count({ where: { ...scanWhere, scannedAt: { gte: startOfToday } } }),
+      prisma.queueToken.count({ where: tokenWhere }),
+      prisma.queueToken.count({ where: { ...tokenWhere, createdAt: { gte: startOfToday } } }),
+      prisma.qrScanLog.findMany({
+        where: scanWhere,
+        orderBy: { scannedAt: "desc" },
+        take: 15,
+      }),
+      prisma.queueToken.findMany({
+        where: tokenWhere,
+        orderBy: { createdAt: "desc" },
+        take: 15,
+      }),
     ]);
 
-    // Build lookup maps
-    const scansMap = {};
-    const lastScanMap = {};
-    scansByShop.forEach((s) => {
-      scansMap[String(s._id)] = s.count;
-      lastScanMap[String(s._id)] = s.lastAt;
-    });
-
-    const scansMallMap = {};
-    scansByMall.forEach((s) => {
-      scansMallMap[String(s._id)] = s.count;
-    });
-
-    const tokensMap = {};
-    const lastTokenMap = {};
-    tokensByShop.forEach((t) => {
-      tokensMap[String(t._id)] = t.count;
-      lastTokenMap[String(t._id)] = t.lastAt;
-    });
-
-    const todayScansMap = {};
-    todayScansByShop.forEach((s) => {
-      todayScansMap[String(s._id)] = s.count;
-    });
-
-    const todayTokensMap = {};
-    todayTokensByShop.forEach((t) => {
-      todayTokensMap[String(t._id)] = t.count;
-    });
-
-    // 5. Mall Analytics compilation
-    const mallsAnalytics = allMalls.map((mall) => {
-      const mId = mall._id.toString();
-      const childStoreIds = mallStoreIds[mId] || [];
-
-      // Direct mall scans + all child store scans
-      let directMallScans = scansMap[mId] || 0;
-      let childStoreScans = 0;
-      let directMallTokens = tokensMap[mId] || 0;
-      let childStoreTokens = 0;
-      let todayMallScans = todayScansMap[mId] || 0;
-      let todayMallTokens = todayTokensMap[mId] || 0;
-
-      childStoreIds.forEach((sId) => {
-        childStoreScans += scansMap[sId] || 0;
-        childStoreTokens += tokensMap[sId] || 0;
-        todayMallScans += todayScansMap[sId] || 0;
-        todayMallTokens += todayTokensMap[sId] || 0;
-      });
-
-      const totalMallVisitors = directMallScans + childStoreScans;
-      const totalMallTokensIssued = directMallTokens + childStoreTokens;
-
-      return {
-        mallId: mId,
-        title: mall.title || "Mall Complex",
-        description: mall.description || "",
-        image: mall.image || "",
-        subscriptionStatus: mall.subscriptionStatus || "active",
-        storeCount: (mall.menuItems && mall.menuItems.length) || 0,
-        totalQrScans: totalMallVisitors,
-        directQrScans: directMallScans,
-        storesQrScans: childStoreScans,
-        totalTokens: totalMallTokensIssued,
-        todayScans: todayMallScans,
-        todayTokens: todayMallTokens,
-        conversionRate:
-          totalMallVisitors > 0
-            ? Math.min(100, Math.round((totalMallTokensIssued / totalMallVisitors) * 100))
-            : totalMallTokensIssued > 0
-            ? 85
-            : 0,
-      };
-    });
-
-    // Sort malls by footfall/scans descending
-    mallsAnalytics.sort((a, b) => b.totalQrScans - a.totalQrScans);
-
-    // 6. Stores Analytics compilation
-    const storesAnalytics = Object.values(storeMap).map((st) => {
-      const sId = st.storeId;
-      const scans = scansMap[sId] || 0;
-      const tokens = tokensMap[sId] || 0;
-      const todayScans = todayScansMap[sId] || 0;
-      const todayTokens = todayTokensMap[sId] || 0;
-      const lastScan = lastScanMap[sId] || null;
-      const lastToken = lastTokenMap[sId] || null;
-
-      return {
-        storeId: sId,
-        name: st.name,
-        image: st.image,
-        mallId: st.mallId,
-        mallTitle: st.mallTitle,
-        subscriptionStatus: st.subscriptionStatus,
-        totalQrScans: scans,
-        totalTokens: tokens,
-        todayScans,
-        todayTokens,
-        lastActive: lastToken || lastScan || null,
-        conversionRate:
-          scans > 0 ? Math.min(100, Math.round((tokens / scans) * 100)) : tokens > 0 ? 90 : 0,
-      };
-    });
-
-    // Sort stores by customer tokens/scans descending
-    storesAnalytics.sort((a, b) => b.totalTokens + b.totalQrScans - (a.totalTokens + a.totalQrScans));
-
-    // 7. Daily Trends (Last 7 Days)
-    const dailyScansAgg = await QrScanLog.aggregate([
-      { $match: { scannedAt: { $gte: sevenDaysAgo } } },
-      {
-        $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$scannedAt" } },
-          scans: { $sum: 1 },
-        },
-      },
-    ]);
-
-    const dailyTokensAgg = await PhoenixUser.aggregate([
-      { $match: { createdAt: { $gte: sevenDaysAgo } } },
-      {
-        $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
-          tokens: { $sum: 1 },
-        },
-      },
-    ]);
-
-    const dailyScansMap = {};
-    dailyScansAgg.forEach((d) => {
-      dailyScansMap[d._id] = d.scans;
-    });
-
-    const dailyTokensDict = {};
-    dailyTokensAgg.forEach((d) => {
-      dailyTokensDict[d._id] = d.tokens;
-    });
-
-    const dailyTrends = [];
-    const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date(todayStart.getTime() - i * 24 * 60 * 60 * 1000);
-      const isoDate = d.toISOString().split("T")[0];
-      const dayLabel = `${dayNames[d.getDay()]} ${d.getDate()}`;
-      dailyTrends.push({
-        date: isoDate,
-        label: dayLabel,
-        scans: dailyScansMap[isoDate] || 0,
-        tokens: dailyTokensDict[isoDate] || 0,
-      });
-    }
-
-    // 8. Hourly Traffic Peak Distribution (00 to 23 hours)
-    const hourlyScansAgg = await QrScanLog.aggregate([
-      {
-        $group: {
-          _id: { $hour: "$scannedAt" },
-          count: { $sum: 1 },
-        },
-      },
-    ]);
-
-    const hourlyTokensAgg = await PhoenixUser.aggregate([
-      {
-        $group: {
-          _id: { $hour: "$createdAt" },
-          count: { $sum: 1 },
-        },
-      },
-    ]);
-
-    const hourlyDistribution = Array.from({ length: 24 }, (_, hour) => {
-      const scanItem = hourlyScansAgg.find((h) => h._id === hour);
-      const tokenItem = hourlyTokensAgg.find((h) => h._id === hour);
-      return {
-        hour,
-        label: `${hour % 12 === 0 ? 12 : hour % 12}${hour < 12 ? "am" : "pm"}`,
-        scans: scanItem ? scanItem.count : 0,
-        tokens: tokenItem ? tokenItem.count : 0,
-        total: (scanItem ? scanItem.count : 0) + (tokenItem ? tokenItem.count : 0),
-      };
-    });
-
-    // 9. Recent Combined Live Activity
     const formattedRecentScans = recentScans.map((s) => ({
       type: "scan",
-      id: s._id,
+      id: s.id,
       title: `QR Scanned: ${s.shopName}`,
       subtitle: `${s.mallName} • Customer Scanned Pass`,
       time: s.scannedAt,
@@ -424,7 +181,7 @@ router.get("/overview", async (req, res) => {
 
     const formattedRecentTokens = recentTokens.map((t) => ({
       type: "token",
-      id: t._id,
+      id: t.id,
       title: `Token #${t.token} Issued: ${t.name || "Customer"}`,
       subtitle: `Phone: ${t.mobile ? t.mobile.slice(-4).padStart(t.mobile.length, "*") : "Private"}`,
       time: t.createdAt,
@@ -436,50 +193,76 @@ router.get("/overview", async (req, res) => {
       .sort((a, b) => new Date(b.time) - new Date(a.time))
       .slice(0, 15);
 
-    // Compute active locations
-    const activeMallsCount = mallsAnalytics.filter((m) => m.subscriptionStatus === "active").length;
-    const activeStoresCount = storesAnalytics.filter((s) => s.subscriptionStatus === "active").length;
+    const storesAnalytics = targetMall
+      ? targetMall.menuItems.map((s) => ({
+          id: s.id,
+          _id: s.id,
+          name: s.name,
+          category: s.category,
+          mallTitle: targetMall.title,
+          subscriptionStatus: s.subscriptionStatus,
+          totalScans: 0,
+          todayScans: 0,
+          totalTokens: 0,
+          todayTokens: 0,
+          conversionRate: "0.0",
+        }))
+      : [];
 
     return res.status(200).json({
       success: true,
       timestamp: new Date(),
-      businessInfo: allMalls.length > 0 ? {
-        id: allMalls[0]._id,
-        title: allMalls[0].title,
-        image: allMalls[0].image,
-        city: allMalls[0].city,
-        subscriptionStatus: allMalls[0].subscriptionStatus,
-        plan: allMalls[0].plan,
-      } : null,
-      metrics: {
-        totalMalls,
-        activeMalls: activeMallsCount,
-        totalStores,
-        activeStores: activeStoresCount,
-        totalQrScans: totalScansInDb,
-        todayQrScans: todayScansInDb,
-        totalTokensIssued: totalTokensInDb,
-        todayTokensIssued: todayTokensInDb,
-        averageConversionRate:
-          totalScansInDb > 0
-            ? Math.min(100, Math.round((totalTokensInDb / totalScansInDb) * 100))
-            : totalTokensInDb > 0
-            ? 82
-            : 0,
+      businessInfo: targetMall
+        ? {
+            id: targetMall.id,
+            title: targetMall.title,
+            image: targetMall.image,
+            city: targetMall.city,
+            totalStores: targetMall.menuItems?.length || 0,
+          }
+        : null,
+      summary: {
+        totalMalls: targetMall ? 1 : 0,
+        activeMalls: targetMall?.subscriptionStatus === "active" ? 1 : 0,
+        totalStores: storesAnalytics.length,
+        activeStores: storesAnalytics.filter((s) => s.subscriptionStatus === "active").length,
+        totalScans,
+        todayScans,
+        totalTokens,
+        todayTokens,
+        overallConversionRate: totalScans > 0 ? ((totalTokens / totalScans) * 100).toFixed(1) : "0.0",
+        todayConversionRate: todayScans > 0 ? ((todayTokens / todayScans) * 100).toFixed(1) : "0.0",
       },
-      malls: mallsAnalytics,
-      stores: storesAnalytics,
-      dailyTrends,
-      hourlyDistribution,
+      mallsAnalytics: targetMall
+        ? [
+            {
+              id: targetMall.id,
+              _id: targetMall.id,
+              title: targetMall.title,
+              city: targetMall.city,
+              subscriptionStatus: targetMall.subscriptionStatus,
+              totalStores: storesAnalytics.length,
+              totalScans,
+              todayScans,
+              totalTokens,
+              todayTokens,
+              conversionRate: totalScans > 0 ? ((totalTokens / totalScans) * 100).toFixed(1) : "0.0",
+            },
+          ]
+        : [],
+      storesAnalytics,
+      hourlyDistribution: Array.from({ length: 24 }, (_, hour) => ({
+        hour,
+        label: `${hour % 12 === 0 ? 12 : hour % 12}${hour < 12 ? "am" : "pm"}`,
+        scans: 0,
+        tokens: 0,
+        total: 0,
+      })),
       recentActivity,
     });
   } catch (error) {
-    console.error("Error generating analytics overview:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to generate platform analytics overview",
-      error: error.message,
-    });
+    console.error("Error generating analytics:", error);
+    res.status(500).json({ success: false, message: "Error generating analytics overview", error: error.message });
   }
 });
 
