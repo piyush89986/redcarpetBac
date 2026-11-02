@@ -12,6 +12,7 @@ const displayRoutes = require("./routes/displayRoutes"); // ✅ Add this line
 const forgotPasswordRoutes = require("./routes/forgotPasswordRoutes"); // Ensure path is correct
 const utilityRoutes = require("./routes/utilityRoute"); // Ensure path is correct
 const qrRoutes = require("./routes/qrRoutes");
+const shopRoutes = require("./routes/shopRoutes");
 const analyticsRoutes = require("./routes/analyticsRoutes");
 const planRoutes = require("./routes/planRoutes");
 const rateLimit = require("express-rate-limit");
@@ -185,6 +186,7 @@ app.use(express.json({ limit: "200mb" })); // Reduced size to prevent crashes
 app.use(express.urlencoded({ limit: "200mb", extended: true }));
 
 // API route
+app.use("/", shopRoutes);
 app.use("/api", dataRoutes);
 app.use("/api", displayRoutes);
 app.use("/api", qrRoutes);
