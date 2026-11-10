@@ -90,6 +90,33 @@ router.post("/login", async (req, res) => {
       return res.status(400).json({ error: "Invalid password" });
     }
 
+    // Detect if store has been disabled or soft-deleted by Admin
+    let isStoreDisabled = false;
+    let storeStatus = "active";
+
+    if (storeItem) {
+      storeStatus = storeItem.subscriptionStatus || "active";
+      if (storeStatus === "inactive" || storeStatus === "deleted") {
+        isStoreDisabled = true;
+      }
+    } else if (user && user.shopId) {
+      const uStore = await prisma.store.findUnique({
+        where: { id: user.shopId },
+      });
+      if (uStore) {
+        storeStatus = uStore.subscriptionStatus || "active";
+        if (storeStatus === "inactive" || storeStatus === "deleted") {
+          isStoreDisabled = true;
+        }
+      }
+    }
+
+    if (mall && mall.subscriptionStatus === "inactive") {
+      return res.status(403).json({
+        error: "This shopping complex account has been deactivated by the platform administrator.",
+      });
+    }
+
     // Auto-sync User record in PostgreSQL
     if (effectiveHashedPassword) {
       if (user) {
@@ -147,11 +174,15 @@ router.post("/login", async (req, res) => {
       role: returnRole,
       shopId: returnShopId,
       mallId: returnMallId,
+      accountDisabled: isStoreDisabled,
+      storeStatus,
       user: {
         id: user ? user.id : mall ? mall.id : storeItem.id,
         email: cleanEmail,
         role: returnRole,
         name: user?.name || mall?.title || storeItem?.name || "User",
+        accountDisabled: isStoreDisabled,
+        storeStatus,
       },
     });
   } catch (error) {

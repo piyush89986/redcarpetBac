@@ -3,16 +3,42 @@ const router = express.Router();
 const prisma = require("../prisma/client");
 const bcrypt = require("bcryptjs");
 
-// Add Store/Menu Item to a Mall
+// Add Store/Menu Item to a Mall (Enforcing Unique Email)
 router.post("/shops/:id/menu", async (req, res) => {
   try {
     const { id } = req.params;
     const mall = await prisma.mall.findUnique({ where: { id } });
-    if (!mall) return res.status(404).json({ message: "Mall not found" });
+    if (!mall) return res.status(404).json({ success: false, message: "Mall not found" });
+
+    const storeEmail = req.body.email ? req.body.email.trim().toLowerCase() : null;
+    if (!storeEmail) {
+      return res.status(400).json({ success: false, message: "Counter staff email address is required." });
+    }
+
+    // 1. Enforce Unique Email across all stores
+    const existingStore = await prisma.store.findFirst({
+      where: { email: { equals: storeEmail, mode: "insensitive" } },
+    });
+    if (existingStore) {
+      return res.status(400).json({
+        success: false,
+        message: `The email "${storeEmail}" is already registered to store "${existingStore.name}". Each store must have a unique staff email address.`,
+      });
+    }
+
+    // 2. Check if email is already in use by a shopping complex account
+    const existingMall = await prisma.mall.findFirst({
+      where: { email: { equals: storeEmail, mode: "insensitive" } },
+    });
+    if (existingMall) {
+      return res.status(400).json({
+        success: false,
+        message: `The email "${storeEmail}" is already in use by a shopping complex administrator account.`,
+      });
+    }
 
     const hashedPassword = req.body.password ? await bcrypt.hash(req.body.password, 10) : null;
     const storeName = req.body.name || req.body.title || "Store";
-    const storeEmail = req.body.email ? req.body.email.trim().toLowerCase() : null;
 
     // Create the Store in PostgreSQL
     const newStore = await prisma.store.create({
@@ -58,26 +84,35 @@ router.post("/shops/:id/menu", async (req, res) => {
 
     const updatedMall = await prisma.mall.findUnique({
       where: { id },
-      include: { menuItems: true },
+      include: { menuItems: { orderBy: { createdAt: "asc" } } },
     });
+
+    const visibleItems = updatedMall.menuItems.filter(
+      (m) => m.subscriptionStatus !== "deleted"
+    );
 
     res.json({
       _id: updatedMall.id,
       ...updatedMall,
-      menuItems: updatedMall.menuItems.map((m) => ({ _id: m.id, ...m })),
+      store: newStore,
+      menuItems: visibleItems.map((m) => ({ _id: m.id, ...m })),
     });
   } catch (err) {
     console.error("Error adding menu item:", err);
-    res.status(500).json({ message: err.message });
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// Get Stores / Menu Items of a Mall
+// Get Stores / Menu Items of a Mall (excluding deleted stores)
 router.get("/shops/:id/menu", async (req, res) => {
   try {
     const { id } = req.params;
     const stores = await prisma.store.findMany({
-      where: { mallId: id },
+      where: {
+        mallId: id,
+        subscriptionStatus: { not: "deleted" },
+      },
+      orderBy: { createdAt: "asc" },
     });
 
     res.json(stores.map((s) => ({ _id: s.id, ...s })));

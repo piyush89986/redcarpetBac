@@ -194,20 +194,59 @@ router.get("/overview", async (req, res) => {
       .slice(0, 15);
 
     const storesAnalytics = targetMall
-      ? targetMall.menuItems.map((s) => ({
-          id: s.id,
-          _id: s.id,
-          name: s.name,
-          category: s.category,
-          mallTitle: targetMall.title,
-          subscriptionStatus: s.subscriptionStatus,
-          totalScans: 0,
-          todayScans: 0,
-          totalTokens: 0,
-          todayTokens: 0,
-          conversionRate: "0.0",
-        }))
+      ? await Promise.all(
+          targetMall.menuItems.map(async (s) => {
+            const [storeTotalTokens, storeTodayTokens, storeTotalScans, storeTodayScans] = await Promise.all([
+              prisma.queueToken.count({ where: { shopid: s.id } }),
+              prisma.queueToken.count({ where: { shopid: s.id, createdAt: { gte: startOfToday } } }),
+              prisma.qrScanLog.count({ where: { shopId: s.id } }),
+              prisma.qrScanLog.count({ where: { shopId: s.id, scannedAt: { gte: startOfToday } } }),
+            ]);
+
+            const conversionRate =
+              storeTotalScans > 0
+                ? ((storeTotalTokens / storeTotalScans) * 100).toFixed(1)
+                : "0.0";
+
+            return {
+              id: s.id,
+              _id: s.id,
+              storeId: s.id,
+              name: s.name,
+              image: s.image,
+              description: s.description,
+              category: s.category,
+              mallTitle: targetMall.title,
+              subscriptionStatus: s.subscriptionStatus || "active",
+              totalScans: storeTotalScans,
+              todayScans: storeTodayScans,
+              totalQrScans: storeTotalScans,
+              todayQrScans: storeTodayScans,
+              totalTokens: storeTotalTokens,
+              todayTokens: storeTodayTokens,
+              conversionRate,
+            };
+          })
+        )
       : [];
+
+    const activeStoresCount = storesAnalytics.filter(
+      (s) => s.subscriptionStatus === "active"
+    ).length;
+    const averageConversionRate =
+      totalScans > 0 ? ((totalTokens / totalScans) * 100).toFixed(1) : "0.0";
+
+    const metrics = {
+      totalMalls: targetMall ? 1 : 0,
+      activeMalls: targetMall?.subscriptionStatus === "active" ? 1 : 0,
+      totalStores: storesAnalytics.length,
+      activeStores: activeStoresCount,
+      totalQrScans: totalScans,
+      todayQrScans: todayScans,
+      totalTokensIssued: totalTokens,
+      todayTokensIssued: todayTokens,
+      averageConversionRate: Number(averageConversionRate),
+    };
 
     return res.status(200).json({
       success: true,
@@ -218,21 +257,25 @@ router.get("/overview", async (req, res) => {
             title: targetMall.title,
             image: targetMall.image,
             city: targetMall.city,
-            totalStores: targetMall.menuItems?.length || 0,
+            totalStores: storesAnalytics.length,
           }
         : null,
+      metrics,
       summary: {
         totalMalls: targetMall ? 1 : 0,
         activeMalls: targetMall?.subscriptionStatus === "active" ? 1 : 0,
         totalStores: storesAnalytics.length,
-        activeStores: storesAnalytics.filter((s) => s.subscriptionStatus === "active").length,
+        activeStores: activeStoresCount,
         totalScans,
         todayScans,
         totalTokens,
         todayTokens,
-        overallConversionRate: totalScans > 0 ? ((totalTokens / totalScans) * 100).toFixed(1) : "0.0",
-        todayConversionRate: todayScans > 0 ? ((todayTokens / todayScans) * 100).toFixed(1) : "0.0",
+        overallConversionRate: averageConversionRate,
+        todayConversionRate:
+          todayScans > 0 ? ((todayTokens / todayScans) * 100).toFixed(1) : "0.0",
       },
+      stores: storesAnalytics,
+      storesAnalytics,
       mallsAnalytics: targetMall
         ? [
             {
@@ -246,11 +289,10 @@ router.get("/overview", async (req, res) => {
               todayScans,
               totalTokens,
               todayTokens,
-              conversionRate: totalScans > 0 ? ((totalTokens / totalScans) * 100).toFixed(1) : "0.0",
+              conversionRate: averageConversionRate,
             },
           ]
         : [],
-      storesAnalytics,
       hourlyDistribution: Array.from({ length: 24 }, (_, hour) => ({
         hour,
         label: `${hour % 12 === 0 ? 12 : hour % 12}${hour < 12 ? "am" : "pm"}`,

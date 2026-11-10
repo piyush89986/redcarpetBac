@@ -102,16 +102,39 @@ app.use((req, res, next) => {
 });
 
 // Rate Limiters
+const isLoopbackOrLocalIp = (ip, hostname) => {
+  if (hostname === "localhost") return true;
+  if (!ip) return false;
+  return (
+    ip === "127.0.0.1" ||
+    ip === "::1" ||
+    ip === "::ffff:127.0.0.1" ||
+    ip.startsWith("192.168.") ||
+    ip.startsWith("10.") ||
+    ip.startsWith("172.16.")
+  );
+};
+
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 600, // Limit each IP to 600 requests per 15 minutes
+  max: 10000, // Generous 10,000 requests per 15 minutes for real-time queue dashboards
   standardHeaders: true,
   legacyHeaders: false,
-  skip: (req) =>
-    req.path === "/health" ||
-    req.path === "/version" ||
-    req.path === "/api/health" ||
-    req.path === "/api/version",
+  skip: (req) => {
+    // Never throttle local development, internal IPs, health endpoints, or authentication
+    if (isLoopbackOrLocalIp(req.ip, req.hostname)) return true;
+    if (
+      req.path.startsWith("/auth") ||
+      req.path.startsWith("/api/auth") ||
+      req.path === "/health" ||
+      req.path === "/version" ||
+      req.path === "/api/health" ||
+      req.path === "/api/version"
+    ) {
+      return true;
+    }
+    return false;
+  },
   message: {
     success: false,
     error: "Too many requests from this IP. Please try again after 15 minutes.",
@@ -120,9 +143,10 @@ const globalLimiter = rateLimit({
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 30, // Limit login / auth attempts to 30 per 15 min
+  max: 500, // Generous limit for login / auth attempts so testing and active operations never get locked out
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => isLoopbackOrLocalIp(req.ip, req.hostname),
   message: {
     success: false,
     error: "Too many authentication attempts. Please wait 15 minutes before trying again.",
@@ -205,9 +229,13 @@ const twilioPhone = process.env.TWILIO_PHONE;
 const client = twilio(accountSid, authToken);
 
 // Routes
+// Save Customer Queue Information / Register Walk-in Customer (Manual & QR Scan)
 app.post("/api/information", async (req, res) => {
-  console.log("Data received:", req.body);
   const { name, mobile, email, shopid } = req.body;
+  if (!shopid) {
+    return res.status(400).json({ success: false, message: "Shop ID is required" });
+  }
+
   try {
     // 12-hour refreshed token logic per shop
     const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000);
@@ -220,24 +248,46 @@ app.post("/api/information", async (req, res) => {
     // Starts at 101, resets every 12 hours
     const assignedToken = String(100 + count + 1);
 
+    // Look up associated mallId for store
+    const store = await prisma.store.findUnique({
+      where: { id: String(shopid) },
+      select: { mallId: true, name: true },
+    }).catch(() => null);
+
     const newInfo = await prisma.queueToken.create({
       data: {
-        name: String(name || "Customer"),
-        mobile: String(mobile || ""),
-        email: String(email || ""),
+        name: String(name || "Walk-in Guest").trim(),
+        mobile: String(mobile || "").trim(),
+        email: String(email || "").trim().toLowerCase(),
         token: assignedToken,
         shopid: String(shopid),
+        mallId: store?.mallId || "",
+        status: "waiting",
       },
     });
-    console.log("Data saved successfully with 12h-refreshed token:", assignedToken);
+
+    console.log(`[Queue] Token #${assignedToken} issued to "${newInfo.name}" for shop ${shopid}`);
+
+    // Broadcast new token to all connected counter dashboards and TV screens
+    if (io) {
+      io.emit("new-queue-token", {
+        shopId: String(shopid),
+        token: assignedToken,
+        name: newInfo.name,
+        mobile: newInfo.mobile,
+        createdAt: newInfo.createdAt,
+      });
+    }
+
     res.status(201).json({
-      message: "Data saved successfully!",
+      success: true,
+      message: `Token #${assignedToken} issued successfully!`,
       token: assignedToken,
       newInfo,
     });
   } catch (err) {
-    console.log("Error saving data:", err);
-    res.status(500).json({ message: "Error saving data", error: err.message });
+    console.error("Error saving queue token:", err);
+    res.status(500).json({ success: false, message: "Error saving customer data", error: err.message });
   }
 });
 
@@ -689,7 +739,7 @@ app.put("/api/shops/update-menu-item/:id/:name", async (req, res) => {
   }
 });
 
-// Delete Store / Counter inside a Mall
+// Soft-Delete Store / Counter inside a Mall (Marks as deleted, retains record in DB)
 app.delete("/api/shops/delete-menu-item/:id/:name", async (req, res) => {
   const { id, name } = req.params;
 
@@ -697,7 +747,7 @@ app.delete("/api/shops/delete-menu-item/:id/:name", async (req, res) => {
     const store = await prisma.store.findFirst({
       where: {
         mallId: id,
-        name,
+        OR: [{ id: name }, { name: name }],
       },
     });
 
@@ -705,9 +755,24 @@ app.delete("/api/shops/delete-menu-item/:id/:name", async (req, res) => {
       return res.status(404).json({ success: false, message: "Store not found" });
     }
 
-    await prisma.store.delete({ where: { id: store.id } });
+    // 1. Mark store as deleted in DB
+    const updatedStore = await prisma.store.update({
+      where: { id: store.id },
+      data: { subscriptionStatus: "deleted" },
+    });
 
-    res.json({ success: true, message: "Item deleted successfully" });
+    // 2. Mark user accounts as inactive
+    await prisma.user.updateMany({
+      where: {
+        OR: [
+          { shopId: store.id },
+          ...(store.email ? [{ email: { equals: store.email, mode: "insensitive" } }] : []),
+        ],
+      },
+      data: { isActive: false },
+    });
+
+    res.json({ success: true, message: "Store disabled and removed from mall directory", store: updatedStore });
   } catch (error) {
     console.error("Error deleting item:", error);
     res.status(500).json({ success: false, message: "Server error", error: error.message });
