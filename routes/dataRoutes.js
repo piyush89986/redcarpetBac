@@ -28,4 +28,105 @@ router.get('/get-data/:id', async (req, res) => {
   }
 });
 
+// Mark token as served (Persisted in PostgreSQL database)
+router.post('/mark-served', async (req, res) => {
+  try {
+    const { tokenId, id, shopId, shopid, token } = req.body;
+    const targetId = tokenId || id;
+
+    if (targetId) {
+      const updated = await prisma.queueToken.update({
+        where: { id: String(targetId) },
+        data: {
+          status: 'served',
+          clicked: true,
+          servedAt: new Date(),
+        },
+      });
+      return res.status(200).json({ success: true, data: updated });
+    }
+
+    const sid = shopId || shopid;
+    if (sid && token) {
+      const updated = await prisma.queueToken.updateMany({
+        where: {
+          shopid: String(sid),
+          token: String(token),
+        },
+        data: {
+          status: 'served',
+          clicked: true,
+          servedAt: new Date(),
+        },
+      });
+      return res.status(200).json({ success: true, count: updated.count });
+    }
+
+    return res.status(400).json({ error: 'Token ID or shopId + token is required' });
+  } catch (error) {
+    console.error('Error marking token as served:', error);
+    res.status(500).json({ error: 'Failed to mark token as served' });
+  }
+});
+
+// Mark token as served by URL param
+router.put('/mark-served/:tokenId', async (req, res) => {
+  try {
+    const { tokenId } = req.params;
+    const updated = await prisma.queueToken.update({
+      where: { id: String(tokenId) },
+      data: {
+        status: 'served',
+        clicked: true,
+        servedAt: new Date(),
+      },
+    });
+    res.status(200).json({ success: true, data: updated });
+  } catch (error) {
+    console.error('Error marking token as served by ID:', error);
+    res.status(500).json({ error: 'Failed to mark token as served' });
+  }
+});
+
+// Re-open / unmark served token (returns to waiting line)
+router.post('/unmark-served', async (req, res) => {
+  try {
+    const { tokenId, id, shopId, shopid, token } = req.body;
+    const targetId = tokenId || id;
+
+    if (targetId) {
+      const updated = await prisma.queueToken.update({
+        where: { id: String(targetId) },
+        data: {
+          status: 'waiting',
+          clicked: false,
+          servedAt: null,
+        },
+      });
+      return res.status(200).json({ success: true, data: updated });
+    }
+
+    const sid = shopId || shopid;
+    if (sid && token) {
+      const updated = await prisma.queueToken.updateMany({
+        where: {
+          shopid: String(sid),
+          token: String(token),
+        },
+        data: {
+          status: 'waiting',
+          clicked: false,
+          servedAt: null,
+        },
+      });
+      return res.status(200).json({ success: true, count: updated.count });
+    }
+
+    return res.status(400).json({ error: 'Token ID or shopId + token is required' });
+  } catch (error) {
+    console.error('Error unmarking token:', error);
+    res.status(500).json({ error: 'Failed to unmark token' });
+  }
+});
+
 module.exports = router;
