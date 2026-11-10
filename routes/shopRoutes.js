@@ -2,6 +2,10 @@ const express = require("express");
 const router = express.Router();
 const prisma = require("../prisma/client");
 const bcrypt = require("bcryptjs");
+const NodeCache = require("node-cache");
+
+// Fast In-Memory Cache (TTL: 15 seconds)
+const shopCache = new NodeCache({ stdTTL: 15, checkperiod: 30 });
 
 // Helper to format mall object for frontend compatibility (_id, menuItems)
 const formatMall = (mall) => {
@@ -117,6 +121,7 @@ router.post("/api/shops/:id/menu", async (req, res) => {
       include: { menuItems: { orderBy: { createdAt: "asc" } } },
     });
 
+    shopCache.flushAll();
     res.json({ message: "Store added successfully!", store: newStore, shop: formatMall(updatedMall) });
   } catch (err) {
     console.error("Error creating store:", err);
@@ -141,6 +146,11 @@ router.get("/api/shops/:id/menu", async (req, res) => {
 router.get("/api/shops/:id", async (req, res) => {
   try {
     const { id } = req.params;
+    const cacheKey = `shop_${id}`;
+    const cached = shopCache.get(cacheKey);
+    if (cached) {
+      return res.json(cached);
+    }
 
     // 1. Try finding as a Mall
     const mall = await prisma.mall.findUnique({
@@ -149,7 +159,9 @@ router.get("/api/shops/:id", async (req, res) => {
     });
 
     if (mall) {
-      return res.json(formatMall(mall));
+      const formatted = formatMall(mall);
+      shopCache.set(cacheKey, formatted, 20);
+      return res.json(formatted);
     }
 
     // 2. Try finding as an individual Store inside a Mall
@@ -184,6 +196,7 @@ router.get("/api/shops/:id", async (req, res) => {
           },
         ],
       };
+      shopCache.set(cacheKey, formattedStore, 20);
       return res.json(formattedStore);
     }
 
@@ -259,6 +272,7 @@ const handleUpdateStore = async (req, res) => {
       },
     });
 
+    shopCache.flushAll();
     res.json({ success: true, message: "Store updated", store: updatedStore });
   } catch (err) {
     console.error("Error updating store:", err);
@@ -299,6 +313,7 @@ const handleDeleteStore = async (req, res) => {
       data: { isActive: false },
     });
 
+    shopCache.flushAll();
     res.json({
       success: true,
       message: `Store "${store.name}" disabled and removed from mall directory.`,

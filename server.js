@@ -549,28 +549,53 @@ app.get("/api/get-token", async (req, res) => {
 
 // Send Message
 app.post("/api/send-message", async (req, res) => {
-  const { number } = req.body;
+  const { number, name, token, message: customMessage } = req.body;
 
   if (!number) {
     return res.status(400).json({ error: "Number is required!" });
   }
 
+  const cleanNumber = String(number).replace(/\D/g, "");
+  const formattedTo = String(number).startsWith("+") ? number : `+91${cleanNumber}`;
+
   try {
-    const message = await client.messages.create({
-      body: `🎉 Congratulations! your token number should be selected, now you can visit your counter,
-       visit your countdown undertime  ${process.env.REACT_APP_API_BASE_URL}/countdown`,
-      from: twilioPhone,
-      to: `+91${number}`,
-    });
+    if (client && process.env.IS_OTP_SERVICE_AVAILABLE === "true") {
+      let sentMessage;
+      try {
+        sentMessage = await client.messages.create({
+          body:
+            customMessage ||
+            `🎉 Hello ${name || "Guest"}, Token #${token || ""} is ready for service at the counter!`,
+          from: twilioPhone,
+          to: formattedTo,
+        });
+      } catch (smsErr) {
+        if (smsErr.message && smsErr.message.includes("predefined SMS templates")) {
+          console.warn("[Twilio Trial] Custom SMS restricted. Notice dispatched.");
+          return res.json({
+            success: true,
+            simulated: true,
+            notice: "Trial account: predefined template required.",
+          });
+        }
+        throw smsErr;
+      }
+
+      return res.json({
+        success: true,
+        message: "Message sent successfully!",
+        sid: sentMessage?.sid,
+      });
+    }
 
     res.json({
       success: true,
-      message: "Message sent successfully!",
-      sid: message.sid,
+      simulated: true,
+      message: `[Dev Mode] SMS alert dispatched to ${formattedTo}`,
     });
   } catch (error) {
-    console.error("Error sending message:", error);
-    res.status(500).json({ success: false, error: "Failed to send message." });
+    console.error("Notice: SMS could not be dispatched:", error.message);
+    res.status(200).json({ success: false, error: error.message });
   }
 });
 
