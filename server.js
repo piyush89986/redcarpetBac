@@ -1,7 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const bodyParser = require("body-parser");
-const prisma = require("./prisma/client");
+const { prisma, withDbRetry } = require("./prisma/client");
 const { sequelize, User: ShopUser, QueueToken: User, Mall: Shop, Countdown } = require("./models/pg");
 const dataRoutes = require("./routes/dataRoutes");
 const twilio = require("twilio");
@@ -163,6 +163,7 @@ app.use("/api", menuRoutes);
 app.use("/api", forgotPasswordRoutes);
 
 // Health check utility routes (exempt from blocking)
+app.use("/", utilityRoutes);
 app.use("/api", utilityRoutes);
 
 
@@ -565,8 +566,18 @@ app.post("/api/send-message", async (req, res) => {
 // GET API
 app.get("/api/shops", async (req, res) => {
   try {
-    const shops = await Shop.find({ title: { $exists: true, $ne: "" } });
-    res.json(shops);
+    const shops = await withDbRetry((client) =>
+      client.mall.findMany({
+        include: { menuItems: true },
+        orderBy: { createdAt: "desc" },
+      })
+    );
+    const formatted = shops.map((s) => ({
+      ...s,
+      _id: s.id,
+      stores: s.menuItems || [],
+    }));
+    res.json(formatted);
   } catch (err) {
     res.status(500).json({ message: "Error fetching shops", error: err.message });
   }
@@ -574,8 +585,10 @@ app.get("/api/shops", async (req, res) => {
 
 app.get("/api/menus/:id", async (req, res) => {
   try {
-    const menuItems = await Menu.find({ shopId: req.params.id });
-    res.json(menuItems);
+    const stores = await prisma.store.findMany({
+      where: { mallId: req.params.id },
+    });
+    res.json(stores);
   } catch (error) {
     res.status(500).json({ message: "Error fetching menu" });
   }
@@ -583,32 +596,83 @@ app.get("/api/menus/:id", async (req, res) => {
 
 app.put("/api/shops/:id", async (req, res) => {
   const { id } = req.params;
-  const updatedData = req.body;
-  const hassPas = await bcrypt.hash(req.body.password, 10);
+  const {
+    title,
+    businessName,
+    email,
+    password,
+    city,
+    address,
+    contactPhone,
+    phone,
+    description,
+    subscriptionStatus,
+  } = req.body;
+
   try {
-    const updatedShop = await Shop.findByIdAndUpdate(
-      id,
-      { ...updatedData, password: hassPas },
-      {
-        new: true,
-      }
-    );
-    if (!updatedShop) {
+    const resolvedTitle = (title || businessName || "").trim();
+    const resolvedPhone = (contactPhone || phone || "").trim();
+    const resolvedEmail = email ? email.trim().toLowerCase() : undefined;
+
+    const updateData = {};
+    if (resolvedTitle) updateData.title = resolvedTitle;
+    if (resolvedEmail) updateData.email = resolvedEmail;
+    if (city !== undefined) updateData.city = (city || "").trim();
+    if (address !== undefined) updateData.address = (address || "").trim();
+    if (contactPhone !== undefined || phone !== undefined) updateData.contactPhone = resolvedPhone;
+    if (description !== undefined) updateData.description = (description || "").trim();
+    if (subscriptionStatus) updateData.subscriptionStatus = subscriptionStatus;
+
+    if (password) {
+      const hashedPassword = await bcrypt.hash(password, 10);
+      updateData.password = hashedPassword;
+      updateData.mallconpassword = password;
+    }
+
+    const updatedShop = await prisma.mall.update({
+      where: { id },
+      data: updateData,
+      include: { menuItems: true },
+    });
+
+    if (password || resolvedEmail || resolvedTitle) {
+      await prisma.user.updateMany({
+        where: { OR: [{ mallId: id }, { shopId: id }] },
+        data: {
+          ...(resolvedTitle ? { name: resolvedTitle } : {}),
+          ...(resolvedEmail ? { email: resolvedEmail } : {}),
+          ...(password ? { password: await bcrypt.hash(password, 10) } : {}),
+        },
+      });
+    }
+
+    res.json({
+      ...updatedShop,
+      _id: updatedShop.id,
+      stores: updatedShop.menuItems || [],
+    });
+  } catch (error) {
+    if (error.code === "P2025") {
       return res.status(404).json({ message: "Shop not found" });
     }
-    res.json(updatedShop);
-  } catch (error) {
-    res.status(500).json({ message: "Server error", error });
+    res.status(500).json({ message: "Server error", error: error.message });
   }
 });
 
 app.get("/api/shops/:id", async (req, res) => {
   try {
-    const shop = await Shop.findById(req.params.id);
+    const shop = await prisma.mall.findUnique({
+      where: { id: req.params.id },
+      include: { menuItems: true },
+    });
     if (!shop) return res.status(404).json({ message: "Shop not found" });
-    res.json(shop);
+    res.json({
+      ...shop,
+      _id: shop.id,
+      stores: shop.menuItems || [],
+    });
   } catch (error) {
-    res.status(500).json({ message: "Error fetching shop", error });
+    res.status(500).json({ message: "Error fetching shop", error: error.message });
   }
 });
 
@@ -617,43 +681,52 @@ const handleSubscriptionToggle = async (req, res) => {
   const { id } = req.params;
   const { subscriptionStatus } = req.body;
 
-  if (!subscriptionStatus || !["active", "inactive"].includes(subscriptionStatus)) {
+  if (!subscriptionStatus || !["active", "inactive"].includes(subscriptionStatus.toLowerCase())) {
     return res.status(400).json({
       success: false,
       message: "Valid subscriptionStatus ('active' or 'inactive') is required.",
     });
   }
 
+  const cleanStatus = subscriptionStatus.toLowerCase();
+
   try {
-    // 1. Try finding and updating top-level Mall / Shop
-    if (id) {
-      let shop = await Shop.findById(id);
-      if (shop) {
-        shop.subscriptionStatus = subscriptionStatus;
-        await shop.save();
-        return res.status(200).json({
-          success: true,
-          message: `Subscription successfully updated to ${subscriptionStatus}`,
-          subscriptionStatus,
-          shop,
-        });
-      }
+    // 1. Check if it's a top-level Mall
+    const mall = await prisma.mall.findUnique({ where: { id } });
+    if (mall) {
+      const updatedMall = await prisma.mall.update({
+        where: { id },
+        data: { subscriptionStatus: cleanStatus },
+        include: { menuItems: true },
+      });
+      return res.status(200).json({
+        success: true,
+        message: `Subscription successfully updated to ${cleanStatus}`,
+        subscriptionStatus: cleanStatus,
+        shop: {
+          ...updatedMall,
+          _id: updatedMall.id,
+          stores: updatedMall.menuItems || [],
+        },
+      });
     }
 
-    // 2. Try finding as a child store inside menuItems
-    const parentMall = await Shop.findOne({ "menuItems._id": id });
-    if (parentMall) {
-      const item = parentMall.menuItems.id(id);
-      if (item) {
-        item.subscriptionStatus = subscriptionStatus;
-        await parentMall.save();
-        return res.status(200).json({
-          success: true,
-          message: `Store subscription successfully updated to ${subscriptionStatus}`,
-          subscriptionStatus,
-          shop: item,
-        });
-      }
+    // 2. Check if it's a child Store
+    const store = await prisma.store.findUnique({ where: { id } });
+    if (store) {
+      const updatedStore = await prisma.store.update({
+        where: { id },
+        data: { subscriptionStatus: cleanStatus },
+      });
+      return res.status(200).json({
+        success: true,
+        message: `Store subscription successfully updated to ${cleanStatus}`,
+        subscriptionStatus: cleanStatus,
+        shop: {
+          ...updatedStore,
+          _id: updatedStore.id,
+        },
+      });
     }
 
     return res.status(404).json({
@@ -672,6 +745,7 @@ const handleSubscriptionToggle = async (req, res) => {
 
 app.patch("/api/shops/:id/subscription", handleSubscriptionToggle);
 app.put("/api/shops/:id/subscription", handleSubscriptionToggle);
+app.post("/api/shops/:id/subscription", handleSubscriptionToggle);
 app.post("/api/shops/:id/subscription", handleSubscriptionToggle);
 
 // ye hai edit or save karne ke liye(fruits names, example)
@@ -827,7 +901,7 @@ const handleBusinessOnboard = async (req, res) => {
     }
 
     // Check if business with this email already exists
-    const existingMall = await Shop.findOne({ email: cleanEmail });
+    const existingMall = await prisma.mall.findUnique({ where: { email: cleanEmail } });
     if (existingMall) {
       return res.status(409).json({
         success: false,
@@ -844,60 +918,64 @@ const handleBusinessOnboard = async (req, res) => {
       tier: plan?.tier || "starter",
       maxStores: plan?.maxStores || 25,
       status: plan?.status || "active",
-      expiresAt: plan?.expiresAt ? new Date(plan.expiresAt) : null,
+      expiresAt: plan?.expiresAt ? new Date(plan.expiresAt).toISOString() : null,
     };
 
-    const newShop = new Shop({
-      title: resolvedTitle,
-      email: cleanEmail,
-      password: hashedPassword,
-      role: "admin", // All onboarded businesses have role: 'admin'
-      mallconpassword: password,
-      city: city || "",
-      address: address || "",
-      contactPhone: contactPhone || "",
-      image:
-        image ||
-        "https://images.unsplash.com/photo-1519567241046-7f570eee3ce6?w=1200&q=80",
-      description:
-        description || "Shopping complex & retail entertainment center",
-      subscriptionStatus: subscriptionStatus || "active",
-      plan: resolvedPlan,
-      menuItems: [],
-    });
-
-    await newShop.save();
-
-    // Upsert User login credentials
-    let user = await ShopUser.findOne({ email: cleanEmail });
-    if (user) {
-      user.name = resolvedTitle;
-      user.password = hashedPassword;
-      user.role = "admin";
-      user.shopId = String(newShop._id);
-      await user.save();
-    } else {
-      user = new ShopUser({
-        name: resolvedTitle,
+    const newShop = await prisma.mall.create({
+      data: {
+        title: resolvedTitle,
         email: cleanEmail,
         password: hashedPassword,
         role: "admin",
-        shopId: String(newShop._id),
+        mallconpassword: password,
+        city: city || "",
+        address: address || "",
+        contactPhone: contactPhone || "",
+        image: image || "https://images.unsplash.com/photo-1519567241046-7f570eee3ce6?w=1200&q=80",
+        description: description || "Shopping complex & retail entertainment center",
+        subscriptionStatus: subscriptionStatus || "active",
+        plan: resolvedPlan,
+      },
+    });
+
+    // Upsert User login credentials
+    const existingUser = await prisma.user.findUnique({ where: { email: cleanEmail } });
+    if (existingUser) {
+      await prisma.user.update({
+        where: { email: cleanEmail },
+        data: {
+          name: resolvedTitle,
+          password: hashedPassword,
+          role: "admin",
+          mallId: newShop.id,
+          shopId: newShop.id,
+        },
       });
-      await user.save();
+    } else {
+      await prisma.user.create({
+        data: {
+          name: resolvedTitle,
+          email: cleanEmail,
+          password: hashedPassword,
+          role: "admin",
+          mallId: newShop.id,
+          shopId: newShop.id,
+        },
+      });
     }
 
     return res.status(201).json({
       success: true,
       message: "Business successfully onboarded!",
       business: {
-        id: String(newShop._id),
+        id: String(newShop.id),
+        _id: String(newShop.id),
         title: newShop.title,
         email: newShop.email,
         role: "admin",
         subscriptionStatus: newShop.subscriptionStatus,
         plan: newShop.plan,
-        dashboardUrl: `/branddashboard2/${newShop._id}`,
+        dashboardUrl: `/branddashboard2/${newShop.id}`,
       },
     });
   } catch (error) {
@@ -910,24 +988,81 @@ const handleBusinessOnboard = async (req, res) => {
   }
 };
 
-app.post("/api/business/onboard", handleBusinessOnboard);
-app.post("/api/shops", handleBusinessOnboard);
+let verifyServiceToken = (req, res, next) => next();
+try {
+  const serviceAuth = require("./middleware/serviceAuth");
+  if (serviceAuth && serviceAuth.verifyServiceToken) {
+    verifyServiceToken = serviceAuth.verifyServiceToken;
+  }
+} catch (e) {}
+
+app.post("/api/business/onboard", verifyServiceToken, handleBusinessOnboard);
+app.post("/api/shops", verifyServiceToken, handleBusinessOnboard);
 
 app.delete("/api/shops/:id", async (req, res) => {
   try {
     const shopId = req.params.id;
-    const deletedShop = await Shop.findByIdAndDelete(shopId);
 
-    if (!deletedShop) {
+    // Remove child queue tokens, stores, and users linked to this business
+    await prisma.queueToken.deleteMany({
+      where: { OR: [{ mallId: shopId }, { shopid: shopId }] },
+    }).catch(() => {});
+
+    await prisma.user.deleteMany({
+      where: { OR: [{ mallId: shopId }, { shopId }] },
+    }).catch(() => {});
+
+    await prisma.store.deleteMany({
+      where: { mallId: shopId },
+    }).catch(() => {});
+
+    const deletedShop = await prisma.mall.delete({
+      where: { id: shopId },
+    });
+
+    res.json({ message: "Shop item deleted successfully", deletedShop });
+  } catch (error) {
+    if (error.code === "P2025") {
       return res.status(404).json({ message: "Shop item not found" });
     }
-
-    res.json({ message: "Shop item deleted successfully" });
-  } catch (error) {
-    res.status(500).json({ message: "Error deleting shop item", error });
+    res.status(500).json({ message: "Error deleting shop item", error: error.message });
   }
 });
 
 // Start Server
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+// Graceful shutdown handling for HTTP, Prisma, and Sequelize connections
+const handleGracefulShutdown = async (signal) => {
+  console.log(`\n[Server] Received ${signal}. Closing connections gracefully...`);
+
+  server.close(async () => {
+    console.log("[Server] HTTP server closed.");
+
+    try {
+      await prisma.$disconnect();
+      console.log("[Database] Prisma disconnected successfully.");
+    } catch (err) {
+      console.error("[Database] Error disconnecting Prisma:", err.message);
+    }
+
+    try {
+      await sequelize.close();
+      console.log("[Database] Sequelize disconnected successfully.");
+    } catch (err) {
+      console.error("[Database] Error closing Sequelize:", err.message);
+    }
+
+    process.exit(0);
+  });
+
+  // Force close after 5 seconds if graceful close hangs
+  setTimeout(() => {
+    console.error("[Server] Forceful shutdown initiated after timeout.");
+    process.exit(1);
+  }, 5000).unref();
+};
+
+process.on("SIGINT", () => handleGracefulShutdown("SIGINT"));
+process.on("SIGTERM", () => handleGracefulShutdown("SIGTERM"));

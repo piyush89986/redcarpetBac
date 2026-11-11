@@ -3,8 +3,10 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+  schemas   = ["redcarpet"]
 }
 
 model User {
@@ -25,6 +27,7 @@ model User {
   @@index([role], map: "users_role")
   @@index([shopId], map: "users_shop_id")
   @@map("users")
+  @@schema("redcarpet")
 }
 
 model Mall {
@@ -52,6 +55,7 @@ model Mall {
   @@index([subscriptionStatus])
   @@index([planId])
   @@map("malls")
+  @@schema("redcarpet")
 }
 
 model Store {
@@ -77,6 +81,7 @@ model Store {
   @@index([email], map: "stores_email")
   @@index([mallId], map: "stores_mall_id")
   @@map("stores")
+  @@schema("redcarpet")
 }
 
 model QueueToken {
@@ -100,6 +105,7 @@ model QueueToken {
   @@index([mobile], map: "queuetokens_mobile")
   @@index([shopid, createdAt], map: "queuetokens_shopid_created_at")
   @@map("queuetokens")
+  @@schema("redcarpet")
 }
 
 model QrConfig {
@@ -111,6 +117,7 @@ model QrConfig {
   updatedAt DateTime @updatedAt
 
   @@map("qr_configs")
+  @@schema("redcarpet")
 }
 
 model QrScanLog {
@@ -131,6 +138,7 @@ model QrScanLog {
   @@index([scannedAt], map: "qr_scan_logs_scanned_at")
   @@index([shopId, scannedAt], map: "qr_scan_logs_shop_id_scanned_at")
   @@map("qr_scan_logs")
+  @@schema("redcarpet")
 }
 
 model TvDisplay {
@@ -148,6 +156,7 @@ model TvDisplay {
   updatedAt       DateTime @updatedAt
 
   @@map("tvdisplays")
+  @@schema("redcarpet")
 }
 
 model Countdown {
@@ -165,6 +174,7 @@ model Countdown {
   @@index([shopId])
   @@index([createdAt])
   @@map("countdowns")
+  @@schema("redcarpet")
 }
 
 // 9. Plan Model (SuperAdmin Tier Management)
@@ -186,4 +196,5 @@ model Plan {
   malls          Mall[]
 
   @@map("plans")
+  @@schema("redcarpet")
 }
