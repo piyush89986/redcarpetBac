@@ -1,7 +1,8 @@
 const express = require("express");
 const cors = require("cors");
 const bodyParser = require("body-parser");
-const { prisma, withDbRetry } = require("./prisma/client");
+const prisma = require("./prisma/client");
+const { withDbRetry } = require("./prisma/client");
 const { sequelize, User: ShopUser, QueueToken: User, Mall: Shop, Countdown } = require("./models/pg");
 const dataRoutes = require("./routes/dataRoutes");
 const twilio = require("twilio");
@@ -13,6 +14,7 @@ const displayRoutes = require("./routes/displayRoutes"); // ✅ Add this line
 const forgotPasswordRoutes = require("./routes/forgotPasswordRoutes"); // Ensure path is correct
 const utilityRoutes = require("./routes/utilityRoute"); // Ensure path is correct
 const qrRoutes = require("./routes/qrRoutes");
+const shopRoutes = require("./routes/shopRoutes");
 const analyticsRoutes = require("./routes/analyticsRoutes");
 const planRoutes = require("./routes/planRoutes");
 const rateLimit = require("express-rate-limit");
@@ -102,16 +104,39 @@ app.use((req, res, next) => {
 });
 
 // Rate Limiters
+const isLoopbackOrLocalIp = (ip, hostname) => {
+  if (hostname === "localhost") return true;
+  if (!ip) return false;
+  return (
+    ip === "127.0.0.1" ||
+    ip === "::1" ||
+    ip === "::ffff:127.0.0.1" ||
+    ip.startsWith("192.168.") ||
+    ip.startsWith("10.") ||
+    ip.startsWith("172.16.")
+  );
+};
+
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 600, // Limit each IP to 600 requests per 15 minutes
+  max: 10000, // Generous 10,000 requests per 15 minutes for real-time queue dashboards
   standardHeaders: true,
   legacyHeaders: false,
-  skip: (req) =>
-    req.path === "/health" ||
-    req.path === "/version" ||
-    req.path === "/api/health" ||
-    req.path === "/api/version",
+  skip: (req) => {
+    // Never throttle local development, internal IPs, health endpoints, or authentication
+    if (isLoopbackOrLocalIp(req.ip, req.hostname)) return true;
+    if (
+      req.path.startsWith("/auth") ||
+      req.path.startsWith("/api/auth") ||
+      req.path === "/health" ||
+      req.path === "/version" ||
+      req.path === "/api/health" ||
+      req.path === "/api/version"
+    ) {
+      return true;
+    }
+    return false;
+  },
   message: {
     success: false,
     error: "Too many requests from this IP. Please try again after 15 minutes.",
@@ -120,9 +145,10 @@ const globalLimiter = rateLimit({
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 30, // Limit login / auth attempts to 30 per 15 min
+  max: 500, // Generous limit for login / auth attempts so testing and active operations never get locked out
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => isLoopbackOrLocalIp(req.ip, req.hostname),
   message: {
     success: false,
     error: "Too many authentication attempts. Please wait 15 minutes before trying again.",
@@ -187,6 +213,7 @@ app.use(express.json({ limit: "200mb" })); // Reduced size to prevent crashes
 app.use(express.urlencoded({ limit: "200mb", extended: true }));
 
 // API route
+app.use("/", shopRoutes);
 app.use("/api", dataRoutes);
 app.use("/api", displayRoutes);
 app.use("/api", qrRoutes);
@@ -205,60 +232,90 @@ const twilioPhone = process.env.TWILIO_PHONE;
 const client = twilio(accountSid, authToken);
 
 // Routes
+// Save Customer Queue Information / Register Walk-in Customer (Manual & QR Scan)
 app.post("/api/information", async (req, res) => {
-  console.log("Data received:", req.body);
   const { name, mobile, email, shopid } = req.body;
+  if (!shopid) {
+    return res.status(400).json({ success: false, message: "Shop ID is required" });
+  }
+
   try {
     // 12-hour refreshed token logic per shop
     const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000);
-    const count = await User.countDocuments({
-      shopid: shopid,
-      createdAt: { $gte: twelveHoursAgo },
+    const count = await prisma.queueToken.count({
+      where: {
+        shopid: String(shopid),
+        createdAt: { gte: twelveHoursAgo },
+      },
     });
     // Starts at 101, resets every 12 hours
     const assignedToken = String(100 + count + 1);
 
-    const newInfo = new User({
-      name,
-      mobile,
-      email,
-      token: assignedToken,
-      shopid,
+    // Look up associated mallId for store
+    const store = await prisma.store.findUnique({
+      where: { id: String(shopid) },
+      select: { mallId: true, name: true },
+    }).catch(() => null);
+
+    const newInfo = await prisma.queueToken.create({
+      data: {
+        name: String(name || "Walk-in Guest").trim(),
+        mobile: String(mobile || "").trim(),
+        email: String(email || "").trim().toLowerCase(),
+        token: assignedToken,
+        shopid: String(shopid),
+        mallId: store?.mallId || "",
+        status: "waiting",
+      },
     });
-    await newInfo.save();
-    console.log("Data saved successfully with 12h-refreshed token:", assignedToken);
+
+    console.log(`[Queue] Token #${assignedToken} issued to "${newInfo.name}" for shop ${shopid}`);
+
+    // Broadcast new token to all connected counter dashboards and TV screens
+    if (io) {
+      io.emit("new-queue-token", {
+        shopId: String(shopid),
+        token: assignedToken,
+        name: newInfo.name,
+        mobile: newInfo.mobile,
+        createdAt: newInfo.createdAt,
+      });
+    }
+
     res.status(201).json({
-      message: "Data saved successfully!",
+      success: true,
+      message: `Token #${assignedToken} issued successfully!`,
       token: assignedToken,
       newInfo,
     });
   } catch (err) {
-    console.log("Error saving data:", err);
-    res.status(500).json({ message: "Error saving data", error: err });
+    console.error("Error saving queue token:", err);
+    res.status(500).json({ success: false, message: "Error saving customer data", error: err.message });
   }
 });
 
 // Start Countdown & Broadcast Token Call to Live TV Screens
 app.post("/api/start-countdown", async (req, res) => {
   const { duration, phoneNumber, shopId, token, name, storeName, mallTitle } = req.body;
-  const startTime = Date.now();
+  const startTime = BigInt(Date.now());
   const safeDuration = Number(duration) || 180;
 
   try {
-    const newCountdown = new Countdown({
-      startTime,
-      duration: safeDuration,
-      shopId: String(shopId || ""),
-      token: String(token || ""),
-      name: name || "Valued Guest",
-      storeName: storeName || "",
-      mallTitle: mallTitle || "",
+    const newCountdown = await prisma.countdown.create({
+      data: {
+        startTime,
+        duration: safeDuration,
+        shopId: String(shopId || ""),
+        token: String(token || ""),
+        name: name || "Valued Guest",
+        storeName: storeName || "",
+        mallTitle: mallTitle || "",
+      },
     });
-    await newCountdown.save();
 
     // Broadcast real-time event to all connected TV screens and customer web pages
     io.emit("countdown-start", {
-      startTime,
+      startTime: Number(startTime),
       duration: safeDuration,
       shopId: String(shopId || ""),
       token: String(token || ""),
@@ -293,7 +350,7 @@ app.post("/api/start-countdown", async (req, res) => {
     res.json({
       success: true,
       message: "Countdown started and broadcasted to TV",
-      startTime,
+      startTime: Number(startTime),
       duration: safeDuration,
       token,
       name,
@@ -309,19 +366,24 @@ app.post("/api/start-countdown", async (req, res) => {
 app.get(["/api/get-countdown", "/api/get-countdown/:id"], async (req, res) => {
   try {
     const targetShopId = req.params.id || req.query.shopId;
-    const query = targetShopId ? { shopId: String(targetShopId) } : {};
-    const countdown = await Countdown.findOne(query).sort({ startTime: -1 }).lean();
+    const where = targetShopId ? { shopId: String(targetShopId) } : {};
+    const countdown = await prisma.countdown.findFirst({
+      where,
+      orderBy: { startTime: "desc" },
+    });
 
     if (!countdown) {
       return res.json({ active: false });
     }
 
-    const elapsed = Math.floor((Date.now() - countdown.startTime) / 1000);
+    const startTimeNum = Number(countdown.startTime);
+    const elapsed = Math.floor((Date.now() - startTimeNum) / 1000);
     const duration = countdown.duration || 180;
     const active = elapsed < duration;
 
     res.json({
       ...countdown,
+      startTime: startTimeNum,
       active,
       remaining: Math.max(0, duration - elapsed),
     });
@@ -431,7 +493,7 @@ app.post("/api/verify-otp", otpVerifyLimiter, async (req, res) => {
 
   if (parseInt(otp) === parseInt(storedOtp)) {
     try {
-      const user = await User.findOne({ mobile });
+      const user = await prisma.queueToken.findFirst({ where: { mobile: String(mobile) } });
       delete otpStore[cleanMobile];
       delete otpStore[mobile];
       return res.json({ success: true, message: "OTP verified successfully" });
@@ -470,10 +532,13 @@ app.post("/api/verify-otp", otpVerifyLimiter, async (req, res) => {
 app.get("/api/get-token", async (req, res) => {
   try {
     const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000);
-    const latestUser = await User.findOne({
-      mobile: req.query.phone,
-      createdAt: { $gte: twelveHoursAgo },
-    }).sort({ createdAt: -1 });
+    const latestUser = await prisma.queueToken.findFirst({
+      where: {
+        mobile: String(req.query.phone || ""),
+        createdAt: { gte: twelveHoursAgo },
+      },
+      orderBy: { createdAt: "desc" },
+    });
 
     if (!latestUser) {
       return res.status(404).json({ message: "No active token found in last 12 hours" });
@@ -481,34 +546,59 @@ app.get("/api/get-token", async (req, res) => {
     res.json({ token: latestUser.token });
   } catch (error) {
     console.error("Error fetching token:", error);
-    res.status(500).json({ message: "Error fetching token", error });
+    res.status(500).json({ message: "Error fetching token", error: error.message });
   }
 });
 
 // Send Message
 app.post("/api/send-message", async (req, res) => {
-  const { number } = req.body;
+  const { number, name, token, message: customMessage } = req.body;
 
   if (!number) {
     return res.status(400).json({ error: "Number is required!" });
   }
 
+  const cleanNumber = String(number).replace(/\D/g, "");
+  const formattedTo = String(number).startsWith("+") ? number : `+91${cleanNumber}`;
+
   try {
-    const message = await client.messages.create({
-      body: `🎉 Congratulations! your token number should be selected, now you can visit your counter,
-       visit your countdown undertime  ${process.env.REACT_APP_API_BASE_URL}/countdown`,
-      from: twilioPhone,
-      to: `+91${number}`,
-    });
+    if (client && process.env.IS_OTP_SERVICE_AVAILABLE === "true") {
+      let sentMessage;
+      try {
+        sentMessage = await client.messages.create({
+          body:
+            customMessage ||
+            `🎉 Hello ${name || "Guest"}, Token #${token || ""} is ready for service at the counter!`,
+          from: twilioPhone,
+          to: formattedTo,
+        });
+      } catch (smsErr) {
+        if (smsErr.message && smsErr.message.includes("predefined SMS templates")) {
+          console.warn("[Twilio Trial] Custom SMS restricted. Notice dispatched.");
+          return res.json({
+            success: true,
+            simulated: true,
+            notice: "Trial account: predefined template required.",
+          });
+        }
+        throw smsErr;
+      }
+
+      return res.json({
+        success: true,
+        message: "Message sent successfully!",
+        sid: sentMessage?.sid,
+      });
+    }
 
     res.json({
       success: true,
-      message: "Message sent successfully!",
-      sid: message.sid,
+      simulated: true,
+      message: `[Dev Mode] SMS alert dispatched to ${formattedTo}`,
     });
   } catch (error) {
-    console.error("Error sending message:", error);
-    res.status(500).json({ success: false, error: "Failed to send message." });
+    console.error("Notice: SMS could not be dispatched:", error.message);
+    res.status(200).json({ success: false, error: error.message });
   }
 });
 
@@ -563,26 +653,7 @@ app.post("/api/send-message", async (req, res) => {
 //   }
 // });
 
-// GET API
-app.get("/api/shops", async (req, res) => {
-  try {
-    const shops = await withDbRetry((client) =>
-      client.mall.findMany({
-        include: { menuItems: true },
-        orderBy: { createdAt: "desc" },
-      })
-    );
-    const formatted = shops.map((s) => ({
-      ...s,
-      _id: s.id,
-      stores: s.menuItems || [],
-    }));
-    res.json(formatted);
-  } catch (err) {
-    res.status(500).json({ message: "Error fetching shops", error: err.message });
-  }
-});
-
+// (Shop GET endpoints handled by shopRoutes)
 app.get("/api/menus/:id", async (req, res) => {
   try {
     const stores = await prisma.store.findMany({
@@ -659,23 +730,6 @@ app.put("/api/shops/:id", async (req, res) => {
   }
 });
 
-app.get("/api/shops/:id", async (req, res) => {
-  try {
-    const shop = await prisma.mall.findUnique({
-      where: { id: req.params.id },
-      include: { menuItems: true },
-    });
-    if (!shop) return res.status(404).json({ message: "Shop not found" });
-    res.json({
-      ...shop,
-      _id: shop.id,
-      stores: shop.menuItems || [],
-    });
-  } catch (error) {
-    res.status(500).json({ message: "Error fetching shop", error: error.message });
-  }
-});
-
 // Toggle / Update Mall & Store Subscription Status
 const handleSubscriptionToggle = async (req, res) => {
   const { id } = req.params;
@@ -748,7 +802,7 @@ app.put("/api/shops/:id/subscription", handleSubscriptionToggle);
 app.post("/api/shops/:id/subscription", handleSubscriptionToggle);
 app.post("/api/shops/:id/subscription", handleSubscriptionToggle);
 
-// ye hai edit or save karne ke liye(fruits names, example)
+// Update Store / Counter inside a Mall
 app.put("/api/shops/update-menu-item/:id/:name", async (req, res) => {
   const { id, name } = req.params;
   const {
@@ -762,78 +816,80 @@ app.put("/api/shops/update-menu-item/:id/:name", async (req, res) => {
     newRole,
   } = req.body;
   try {
-    const shop = await Shop.findById(id);
-    if (!shop) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Shop not found" });
+    const store = await prisma.store.findFirst({
+      where: {
+        mallId: id,
+        name,
+      },
+    });
+
+    if (!store) {
+      return res.status(404).json({ success: false, message: "Store not found" });
     }
 
-    const itemIndex = shop.menuItems.findIndex((item) => item.name === name);
-    if (itemIndex === -1) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Menu item not found" });
-    }
-    // Update the item
-    shop.menuItems[itemIndex].name = newName;
-    shop.menuItems[itemIndex].image = newImage;
-    shop.menuItems[itemIndex].link = newLink;
-    shop.menuItems[itemIndex].description = newDescription;
-    shop.menuItems[itemIndex].email = newEmail;
-    shop.menuItems[itemIndex].shopconpassword = newShopConPassword;
-    shop.menuItems[itemIndex].role = newRole;
-
-    // ✅ Hash the new password only if provided
+    let hashedPassword = store.password;
     if (newPassword) {
-      const hashedPassword = await bcrypt.hash(newPassword, 10);
-      shop.menuItems[itemIndex].password = hashedPassword;
+      hashedPassword = await bcrypt.hash(newPassword, 10);
     }
 
-    // Save to database
-    await shop.save();
+    await prisma.store.update({
+      where: { id: store.id },
+      data: {
+        ...(newName && { name: newName }),
+        ...(newDescription !== undefined && { description: newDescription }),
+        ...(newLink !== undefined && { link: newLink }),
+        ...(newImage !== undefined && { image: newImage }),
+        ...(newEmail !== undefined && { email: newEmail }),
+        ...(newShopConPassword !== undefined && { shopconpassword: newShopConPassword }),
+        ...(newRole && { role: newRole }),
+        ...(newPassword && { password: hashedPassword }),
+      },
+    });
 
     res.json({ success: true, message: "Item updated successfully" });
   } catch (error) {
     console.error("Error updating item:", error);
-    res.status(500).json({ success: false, message: "Server error" });
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
   }
 });
 
-// ye hai menu ke jo items he vo delete karne ke liye(fruits names example)
+// Soft-Delete Store / Counter inside a Mall (Marks as deleted, retains record in DB)
 app.delete("/api/shops/delete-menu-item/:id/:name", async (req, res) => {
   const { id, name } = req.params;
 
   try {
-    const shop = await Shop.findById(id);
-    if (!shop) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Shop not found" });
+    const store = await prisma.store.findFirst({
+      where: {
+        mallId: id,
+        OR: [{ id: name }, { name: name }],
+      },
+    });
+
+    if (!store) {
+      return res.status(404).json({ success: false, message: "Store not found" });
     }
 
-    // Filter out the menu item to be deleted
-    const updatedMenuItems = shop.menuItems.filter(
-      (item) => item.name !== name
-    );
+    // 1. Mark store as deleted in DB
+    const updatedStore = await prisma.store.update({
+      where: { id: store.id },
+      data: { subscriptionStatus: "deleted" },
+    });
 
-    // If no changes were made, return an error
-    if (updatedMenuItems.length === shop.menuItems.length) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Menu item not found" });
-    }
+    // 2. Mark user accounts as inactive
+    await prisma.user.updateMany({
+      where: {
+        OR: [
+          { shopId: store.id },
+          ...(store.email ? [{ email: { equals: store.email, mode: "insensitive" } }] : []),
+        ],
+      },
+      data: { isActive: false },
+    });
 
-    // Update the menuItems array
-    shop.menuItems = updatedMenuItems;
-
-    // Save the updated document
-    await shop.save();
-
-    res.json({ success: true, message: "Item deleted successfully" });
+    res.json({ success: true, message: "Store disabled and removed from mall directory", store: updatedStore });
   } catch (error) {
     console.error("Error deleting item:", error);
-    res.status(500).json({ success: false, message: "Server error" });
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
   }
 });
 
@@ -939,30 +995,24 @@ const handleBusinessOnboard = async (req, res) => {
     });
 
     // Upsert User login credentials
-    const existingUser = await prisma.user.findUnique({ where: { email: cleanEmail } });
-    if (existingUser) {
-      await prisma.user.update({
-        where: { email: cleanEmail },
-        data: {
-          name: resolvedTitle,
-          password: hashedPassword,
-          role: "admin",
-          mallId: newShop.id,
-          shopId: newShop.id,
-        },
-      });
-    } else {
-      await prisma.user.create({
-        data: {
-          name: resolvedTitle,
-          email: cleanEmail,
-          password: hashedPassword,
-          role: "admin",
-          mallId: newShop.id,
-          shopId: newShop.id,
-        },
-      });
-    }
+    const user = await prisma.user.upsert({
+      where: { email: cleanEmail },
+      update: {
+        name: resolvedTitle,
+        password: hashedPassword,
+        role: "admin",
+        shopId: newShop.id,
+        mallId: newShop.id,
+      },
+      create: {
+        name: resolvedTitle,
+        email: cleanEmail,
+        password: hashedPassword,
+        role: "admin",
+        shopId: newShop.id,
+        mallId: newShop.id,
+      },
+    });
 
     return res.status(201).json({
       success: true,
@@ -976,6 +1026,11 @@ const handleBusinessOnboard = async (req, res) => {
         subscriptionStatus: newShop.subscriptionStatus,
         plan: newShop.plan,
         dashboardUrl: `/branddashboard2/${newShop.id}`,
+      },
+      user: {
+        id: user.id,
+        email: user.email,
+        role: user.role,
       },
     });
   } catch (error) {

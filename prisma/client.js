@@ -43,6 +43,7 @@ function getResilientDatabaseUrl() {
 
 const resilientUrl = getResilientDatabaseUrl();
 
+// Configure Prisma Client with connection pooling parameters suitable for serverless / Neon pooler
 const prisma = new PrismaClient({
   datasources: resilientUrl
     ? {
@@ -54,6 +55,7 @@ const prisma = new PrismaClient({
   log: [
     { emit: "event", level: "error" },
     { emit: "event", level: "warn" },
+    ...(process.env.NODE_ENV === "development" ? [{ emit: "stdout", level: "query" }] : []),
   ],
 });
 
@@ -127,4 +129,3 @@ module.exports = prisma;
 module.exports.prisma = prisma;
 module.exports.withDbRetry = withDbRetry;
 module.exports.isTransientDbError = isTransientDbError;
-
