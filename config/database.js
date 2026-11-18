@@ -14,8 +14,15 @@ if (connectionString) {
     connectionString.includes("sslmode=require") ||
     !connectionString.includes("localhost") && !connectionString.includes("127.0.0.1");
 
-  sequelize = new Sequelize(connectionString, {
+  // Explicitly use sslmode=verify-full to satisfy pg-connection-string requirements
+  // while preserving full SSL certificate verification security guarantees
+  const normalizedConnectionString = connectionString.includes("sslmode=require")
+    ? connectionString.replace("sslmode=require", "sslmode=verify-full")
+    : connectionString;
+
+  sequelize = new Sequelize(normalizedConnectionString, {
     dialect: "postgres",
+    schema: "redcarpet",
     logging: process.env.NODE_ENV === "development" ? console.log : false,
     dialectOptions: isSslRequired
       ? {
@@ -26,10 +33,10 @@ if (connectionString) {
         }
       : {},
     pool: {
-      max: 15,
+      max: 5,
       min: 0,
-      acquire: 30000,
-      idle: 10000,
+      acquire: 20000,
+      idle: 5000,
     },
   });
 } else {
@@ -42,6 +49,7 @@ if (connectionString) {
       host: process.env.PG_HOST || "localhost",
       port: Number(process.env.PG_PORT) || 5432,
       dialect: "postgres",
+      schema: "redcarpet",
       logging: process.env.NODE_ENV === "development" ? console.log : false,
       dialectOptions: isSslRequired
         ? {
@@ -52,10 +60,10 @@ if (connectionString) {
           }
         : {},
       pool: {
-        max: 15,
+        max: 5,
         min: 0,
-        acquire: 30000,
-        idle: 10000,
+        acquire: 20000,
+        idle: 5000,
       },
     }
   );
