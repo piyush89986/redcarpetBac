@@ -1045,11 +1045,8 @@ const handleBusinessOnboard = async (req, res) => {
           city: city || "",
           address: address || "",
           contactPhone: contactPhone || "",
-          image:
-            image ||
-            "https://images.unsplash.com/photo-1519567241046-7f570eee3ce6?w=1200&q=80",
-          description:
-            description || "Shopping complex & retail entertainment center",
+          image: image || "https://images.unsplash.com/photo-1519567241046-7f570eee3ce6?w=1200&q=80",
+          description: description || "Shopping complex & retail entertainment center",
           subscriptionStatus: subscriptionStatus || "active",
           plan: resolvedPlan,
         },

@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const prisma = require("../prisma/client");
+const { withDbRetry } = require("../prisma/client");
 const bcrypt = require("bcryptjs");
 const NodeCache = require("node-cache");
 
@@ -54,10 +55,17 @@ const formatMall = (mall) => {
 // Fetch all shops/malls
 router.get("/api/shops", async (req, res) => {
   try {
-    const malls = await prisma.mall.findMany({
-      include: { menuItems: { orderBy: { createdAt: "asc" } } },
-    });
-    res.json(malls.map(formatMall));
+    const cached = shopCache.get("all_shops");
+    if (cached) return res.json(cached);
+
+    const malls = await withDbRetry((db) =>
+      db.mall.findMany({
+        include: { menuItems: { orderBy: { createdAt: "asc" } } },
+      })
+    );
+    const formatted = malls.map(formatMall);
+    shopCache.set("all_shops", formatted);
+    res.json(formatted);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
