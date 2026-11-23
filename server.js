@@ -685,6 +685,11 @@ app.get("/api/menus/:id", async (req, res) => {
     res.status(500).json({ message: "Error fetching menu" });
   }
 });
+    res.json(stores);
+  } catch (error) {
+    res.status(500).json({ message: "Error fetching menu" });
+  }
+});
 
 app.put("/api/shops/:id", async (req, res) => {
   const { id } = req.params;
@@ -754,7 +759,6 @@ app.put("/api/shops/:id", async (req, res) => {
     res.status(500).json({ message: "Server error", error: error.message });
   }
 });
-
 app.get("/api/shops/:id", async (req, res) => {
   try {
     const shop = await withDbRetry((client) =>
@@ -847,6 +851,7 @@ const handleSubscriptionToggle = async (req, res) => {
 
 app.patch("/api/shops/:id/subscription", handleSubscriptionToggle);
 app.put("/api/shops/:id/subscription", handleSubscriptionToggle);
+app.post("/api/shops/:id/subscription", handleSubscriptionToggle);
 app.post("/api/shops/:id/subscription", handleSubscriptionToggle);
 
 // Update Store / Counter inside a Mall
