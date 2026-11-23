@@ -653,6 +653,7 @@ app.post("/api/send-message", async (req, res) => {
 //   }
 // });
 
+<<<<<<< HEAD
 // GET API
 app.get("/api/shops", async (req, res) => {
   try {
@@ -680,6 +681,14 @@ app.get("/api/menus/:id", async (req, res) => {
         where: { mallId: req.params.id },
       })
     );
+=======
+// (Shop GET endpoints handled by shopRoutes)
+app.get("/api/menus/:id", async (req, res) => {
+  try {
+    const stores = await prisma.store.findMany({
+      where: { mallId: req.params.id },
+    });
+>>>>>>> origin/feature/redcarpet-integration
     res.json(stores);
   } catch (error) {
     res.status(500).json({ message: "Error fetching menu" });
@@ -721,6 +730,7 @@ app.put("/api/shops/:id", async (req, res) => {
       updateData.mallconpassword = password;
     }
 
+<<<<<<< HEAD
     const updatedShop = await withDbRetry((client) =>
       client.mall.update({
         where: { id },
@@ -740,6 +750,23 @@ app.put("/api/shops/:id", async (req, res) => {
           },
         })
       );
+=======
+    const updatedShop = await prisma.mall.update({
+      where: { id },
+      data: updateData,
+      include: { menuItems: true },
+    });
+
+    if (password || resolvedEmail || resolvedTitle) {
+      await prisma.user.updateMany({
+        where: { OR: [{ mallId: id }, { shopId: id }] },
+        data: {
+          ...(resolvedTitle ? { name: resolvedTitle } : {}),
+          ...(resolvedEmail ? { email: resolvedEmail } : {}),
+          ...(password ? { password: await bcrypt.hash(password, 10) } : {}),
+        },
+      });
+>>>>>>> origin/feature/redcarpet-integration
     }
 
     res.json({
@@ -754,6 +781,8 @@ app.put("/api/shops/:id", async (req, res) => {
     res.status(500).json({ message: "Server error", error: error.message });
   }
 });
+<<<<<<< HEAD
+
 app.get("/api/shops/:id", async (req, res) => {
   try {
     const shop = await withDbRetry((client) =>
@@ -772,6 +801,8 @@ app.get("/api/shops/:id", async (req, res) => {
     res.status(500).json({ message: "Error fetching shop", error: error.message });
   }
 });
+=======
+>>>>>>> origin/feature/redcarpet-integration
 
 // Toggle / Update Mall & Store Subscription Status
 const handleSubscriptionToggle = async (req, res) => {
@@ -789,6 +820,7 @@ const handleSubscriptionToggle = async (req, res) => {
 
   try {
     // 1. Check if it's a top-level Mall
+<<<<<<< HEAD
     const mall = await withDbRetry((client) => client.mall.findUnique({ where: { id } }));
     if (mall) {
       const updatedMall = await withDbRetry((client) =>
@@ -798,6 +830,15 @@ const handleSubscriptionToggle = async (req, res) => {
           include: { menuItems: true },
         })
       );
+=======
+    const mall = await prisma.mall.findUnique({ where: { id } });
+    if (mall) {
+      const updatedMall = await prisma.mall.update({
+        where: { id },
+        data: { subscriptionStatus: cleanStatus },
+        include: { menuItems: true },
+      });
+>>>>>>> origin/feature/redcarpet-integration
       return res.status(200).json({
         success: true,
         message: `Subscription successfully updated to ${cleanStatus}`,
@@ -811,6 +852,7 @@ const handleSubscriptionToggle = async (req, res) => {
     }
 
     // 2. Check if it's a child Store
+<<<<<<< HEAD
     const store = await withDbRetry((client) => client.store.findUnique({ where: { id } }));
     if (store) {
       const updatedStore = await withDbRetry((client) =>
@@ -819,6 +861,14 @@ const handleSubscriptionToggle = async (req, res) => {
           data: { subscriptionStatus: cleanStatus },
         })
       );
+=======
+    const store = await prisma.store.findUnique({ where: { id } });
+    if (store) {
+      const updatedStore = await prisma.store.update({
+        where: { id },
+        data: { subscriptionStatus: cleanStatus },
+      });
+>>>>>>> origin/feature/redcarpet-integration
       return res.status(200).json({
         success: true,
         message: `Store subscription successfully updated to ${cleanStatus}`,
@@ -1034,6 +1084,7 @@ const handleBusinessOnboard = async (req, res) => {
       expiresAt: plan?.expiresAt ? new Date(plan.expiresAt).toISOString() : null,
     };
 
+<<<<<<< HEAD
     const newShop = await withDbRetry((db) =>
       db.mall.create({
         data: {
@@ -1052,6 +1103,24 @@ const handleBusinessOnboard = async (req, res) => {
         },
       })
     );
+=======
+    const newShop = await prisma.mall.create({
+      data: {
+        title: resolvedTitle,
+        email: cleanEmail,
+        password: hashedPassword,
+        role: "admin",
+        mallconpassword: password,
+        city: city || "",
+        address: address || "",
+        contactPhone: contactPhone || "",
+        image: image || "https://images.unsplash.com/photo-1519567241046-7f570eee3ce6?w=1200&q=80",
+        description: description || "Shopping complex & retail entertainment center",
+        subscriptionStatus: subscriptionStatus || "active",
+        plan: resolvedPlan,
+      },
+    });
+>>>>>>> origin/feature/redcarpet-integration
 
     // Upsert User login credentials
     const user = await withDbRetry((db) =>
