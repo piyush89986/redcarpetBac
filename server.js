@@ -685,11 +685,6 @@ app.get("/api/menus/:id", async (req, res) => {
     res.status(500).json({ message: "Error fetching menu" });
   }
 });
-    res.json(stores);
-  } catch (error) {
-    res.status(500).json({ message: "Error fetching menu" });
-  }
-});
 
 app.put("/api/shops/:id", async (req, res) => {
   const { id } = req.params;
